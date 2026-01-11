@@ -51,10 +51,12 @@ class ProwlarrClient:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/api/v1/search",
-                    params=params
-                )
+                url = f"{self.base_url}/api/v1/search"
+                logger.debug(f"Prowlarr request: {url} with params: {params}")
+
+                response = await client.get(url, params=params)
+
+                logger.debug(f"Prowlarr response: status={response.status_code}, content-type={response.headers.get('content-type')}")
                 response.raise_for_status()
 
                 # Parse Torznab XML response
@@ -91,6 +93,11 @@ class ProwlarrClient:
         results = []
 
         try:
+            # Check if response is empty
+            if not xml_text or not xml_text.strip():
+                logger.error("Prowlarr returned empty response")
+                return results
+
             root = ET.fromstring(xml_text)
             channel = root.find('channel')
             if channel is None:
@@ -106,6 +113,9 @@ class ProwlarrClient:
 
         except ET.ParseError as e:
             logger.error(f"Failed to parse Prowlarr XML response: {e}")
+            # Log first 500 chars of response to help debug
+            preview = xml_text[:500] if xml_text else "(empty)"
+            logger.error(f"Response preview: {preview}")
 
         return results
 

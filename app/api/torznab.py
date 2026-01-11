@@ -53,8 +53,8 @@ async def torznab_api(
             else:
                 # Sonarr may call tvsearch without parameters during indexer testing
                 # Return recent anime results to pass the test
-                logger.info("tvsearch called without tvdbid or query string - returning default anime search for indexer test")
-                return await handle_search("anime", limit, offset)
+                logger.info("tvsearch called without tvdbid or query string - returning default search for 'Frieren' for indexer test")
+                return await handle_search("Frieren", limit, offset)
 
         if season is None or ep is None:
             logger.warning(f"tvsearch called without season/ep for TVDB {tvdbid}")
