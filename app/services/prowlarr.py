@@ -1,7 +1,8 @@
 """Prowlarr API client for forwarding search queries."""
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import httpx
+import json
 from xml.etree import ElementTree as ET
 from datetime import datetime
 
@@ -59,8 +60,8 @@ class ProwlarrClient:
                 logger.debug(f"Prowlarr response: status={response.status_code}, content-type={response.headers.get('content-type')}")
                 response.raise_for_status()
 
-                # Parse Torznab XML response
-                results = self._parse_torznab_response(response.text)
+                # Parse JSON response from Prowlarr API
+                results = self._parse_json_response(response.text)
                 logger.info(f"Prowlarr search '{query}' returned {len(results)} results")
                 return results
 
@@ -87,6 +88,96 @@ class ProwlarrClient:
         except httpx.HTTPError as e:
             logger.error(f"Failed to get Prowlarr capabilities: {e}")
             return {}
+
+    def _parse_json_response(self, json_text: str) -> List[SearchResult]:
+        """Parse JSON response from Prowlarr API into SearchResult objects."""
+        results = []
+
+        try:
+            # Check if response is empty
+            if not json_text or not json_text.strip():
+                logger.error("Prowlarr returned empty response")
+                return results
+
+            # Parse JSON array
+            data = json.loads(json_text)
+
+            if not isinstance(data, list):
+                logger.error(f"Expected JSON array but got {type(data)}")
+                return results
+
+            for item in data:
+                try:
+                    result = self._parse_json_item(item)
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logger.warning(f"Failed to parse search result item: {e}")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Prowlarr JSON response: {e}")
+            # Log first 500 chars of response to help debug
+            preview = json_text[:500] if json_text else "(empty)"
+            logger.error(f"Response preview: {preview}")
+
+        return results
+
+    def _parse_json_item(self, item: Dict[str, Any]) -> Optional[SearchResult]:
+        """Parse a single JSON item into SearchResult."""
+        title = item.get('title', '')
+        guid = item.get('guid', '')
+        download_url = item.get('downloadUrl', '')
+
+        if not all([title, guid, download_url]):
+            return None
+
+        # Extract fields from JSON
+        size = item.get('size', 0)
+        seeders = item.get('seeders', 0)
+        peers = item.get('peers', 0)
+        indexer = item.get('indexer', 'prowlarr')
+
+        # Parse publication date
+        publish_date_str = item.get('publishDate', '')
+        pub_date = self._parse_iso_date(publish_date_str)
+
+        # Categories - Prowlarr uses category IDs
+        categories = item.get('categories', [])
+        if not categories:
+            categories = [5070]  # Default to anime category
+
+        # Filter: Only accept results with valid TV/Anime categories
+        # Valid categories: 5000 (TV), 5070 (TV > Anime)
+        valid_categories = {5000, 5070}
+        if not any(cat in valid_categories for cat in categories):
+            logger.debug(f"Skipping result '{title}' - invalid categories: {categories}")
+            return None
+
+        return SearchResult(
+            title=title,
+            guid=guid,
+            link=download_url,
+            pub_date=pub_date,
+            size=size,
+            seeders=seeders,
+            peers=peers,
+            indexer=indexer,
+            categories=categories
+        )
+
+    def _parse_iso_date(self, date_str: str) -> datetime:
+        """Parse ISO 8601 date string to datetime."""
+        if not date_str:
+            return datetime.utcnow()
+
+        try:
+            # Try parsing ISO 8601 format (2008-06-23T03:24:00Z)
+            if date_str.endswith('Z'):
+                date_str = date_str[:-1] + '+00:00'
+            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            logger.warning(f"Could not parse date: {date_str}")
+            return datetime.utcnow()
 
     def _parse_torznab_response(self, xml_text: str) -> List[SearchResult]:
         """Parse Torznab XML response into SearchResult objects."""
