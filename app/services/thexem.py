@@ -1,4 +1,5 @@
 """TheXEM.info API client for episode and ID mapping."""
+
 import logging
 import httpx
 from typing import Optional, Dict, List, Any
@@ -25,12 +26,14 @@ class TheXEMClient:
         """Load cached TheXEM data from file."""
         if self.cache_file.exists():
             try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                with open(self.cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     # Convert string timestamps back to datetime
                     for key, value in data.items():
-                        if 'cached_at' in value:
-                            value['cached_at'] = datetime.fromisoformat(value['cached_at'])
+                        if "cached_at" in value:
+                            value["cached_at"] = datetime.fromisoformat(
+                                value["cached_at"]
+                            )
                     self.cache = data
                 logger.info(f"Loaded {len(self.cache)} TheXEM cache entries")
             except Exception as e:
@@ -44,11 +47,11 @@ class TheXEMClient:
             data = {}
             for key, value in self.cache.items():
                 serialized = value.copy()
-                if 'cached_at' in serialized:
-                    serialized['cached_at'] = serialized['cached_at'].isoformat()
+                if "cached_at" in serialized:
+                    serialized["cached_at"] = serialized["cached_at"].isoformat()
                 data[key] = serialized
 
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
+            with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             logger.debug(f"Saved {len(self.cache)} TheXEM cache entries")
         except Exception as e:
@@ -64,9 +67,7 @@ class TheXEMClient:
         return datetime.utcnow() - cached_at < self.cache_ttl
 
     async def get_all_mappings(
-        self,
-        show_id: int,
-        origin: str = "tvdb"
+        self, show_id: int, origin: str = "tvdb"
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Get all episode mappings for a show.
@@ -91,9 +92,9 @@ class TheXEMClient:
         # Check cache first
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if self._is_cache_valid(cached_data['cached_at']):
+            if self._is_cache_valid(cached_data["cached_at"]):
                 logger.debug(f"Using cached TheXEM data for {origin} ID {show_id}")
-                return cached_data['data']
+                return cached_data["data"]
 
         # Make API request
         url = f"{self.base_url}/map/all"
@@ -112,14 +113,18 @@ class TheXEMClient:
                     # Cache the result
                     self.cache[cache_key] = {
                         "data": data,
-                        "cached_at": datetime.utcnow()
+                        "cached_at": datetime.utcnow(),
                     }
                     self._save_cache()
 
-                    logger.info(f"Retrieved {len(data)} episode mappings from TheXEM for {origin} ID {show_id}")
+                    logger.info(
+                        f"Retrieved {len(data)} episode mappings from TheXEM for {origin} ID {show_id}"
+                    )
                     return data
                 else:
-                    logger.warning(f"TheXEM returned non-success result: {result.get('message')}")
+                    logger.warning(
+                        f"TheXEM returned non-success result: {result.get('message')}"
+                    )
                     return None
 
         except httpx.HTTPStatusError as e:
@@ -139,7 +144,7 @@ class TheXEMClient:
         season: Optional[int] = None,
         episode: Optional[int] = None,
         absolute: Optional[int] = None,
-        destination: Optional[str] = None
+        destination: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Get mapping for a single episode.
@@ -185,12 +190,16 @@ class TheXEMClient:
                 if result.get("result") == "success":
                     return result.get("data", {})
                 else:
-                    logger.warning(f"TheXEM single mapping failed: {result.get('message')}")
+                    logger.warning(
+                        f"TheXEM single mapping failed: {result.get('message')}"
+                    )
                     return None
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                logger.debug(f"No TheXEM single mapping found for {origin} ID {show_id}")
+                logger.debug(
+                    f"No TheXEM single mapping found for {origin} ID {show_id}"
+                )
             else:
                 logger.error(f"TheXEM API error: {e}")
             return None
@@ -198,12 +207,34 @@ class TheXEMClient:
             logger.error(f"Failed to query TheXEM single mapping: {e}")
             return None
 
+    async def get_names_by_tvdb_id(self, tvdb_id: int) -> Optional[List[str]]:
+        """
+        Get all alternative names for a show by TVDB ID.
+
+        Args:
+            tvdb_id: TVDB show ID
+
+        Returns:
+            List of alternative names for the show, or None if not found
+        """
+        # First try to get from cached allNames data
+        all_names = await self.get_all_names(origin="tvdb", default_names=True)
+        if all_names and tvdb_id in all_names:
+            names = all_names[tvdb_id]
+            logger.info(
+                f"Found {len(names)} names for TVDB {tvdb_id} from TheXEM: {names}"
+            )
+            return names
+
+        logger.debug(f"No names found in TheXEM for TVDB {tvdb_id}")
+        return None
+
     async def get_all_names(
         self,
         origin: str,
         season: Optional[str] = None,
         language: Optional[str] = None,
-        default_names: bool = False
+        default_names: bool = False,
     ) -> Optional[Dict[int, List[str]]]:
         """
         Get all show names available in TheXEM.
@@ -235,8 +266,8 @@ class TheXEMClient:
         # Check cache
         if cache_key in self.cache:
             cached_data = self.cache[cache_key]
-            if self._is_cache_valid(cached_data['cached_at']):
-                return cached_data['data']
+            if self._is_cache_valid(cached_data["cached_at"]):
+                return cached_data["data"]
 
         url = f"{self.base_url}/map/allNames"
 
@@ -255,7 +286,7 @@ class TheXEMClient:
                     # Cache the result
                     self.cache[cache_key] = {
                         "data": int_data,
-                        "cached_at": datetime.utcnow()
+                        "cached_at": datetime.utcnow(),
                     }
                     self._save_cache()
 
@@ -270,8 +301,7 @@ class TheXEMClient:
             return None
 
     def get_anidb_id_from_mappings(
-        self,
-        mappings: List[Dict[str, Any]]
+        self, mappings: List[Dict[str, Any]]
     ) -> Optional[int]:
         """
         Extract AniDB ID from TheXEM mappings if available.
@@ -291,7 +321,7 @@ class TheXEMClient:
 
         # Check if any mapping has AniDB data
         for mapping in mappings:
-            if 'anidb' in mapping:
+            if "anidb" in mapping:
                 # AniDB mapping exists, but we don't get the AniDB show ID from episode mappings
                 # This would need to come from another source or be passed in
                 logger.debug("AniDB mappings found in TheXEM data")
@@ -300,10 +330,7 @@ class TheXEMClient:
         return None
 
     async def tvdb_to_anidb_episode(
-        self,
-        tvdb_id: int,
-        season: int,
-        episode: int
+        self, tvdb_id: int, season: int, episode: int
     ) -> Optional[int]:
         """
         Convert TVDB season/episode to AniDB absolute episode number.
@@ -321,12 +348,12 @@ class TheXEMClient:
             origin="tvdb",
             season=season,
             episode=episode,
-            destination="anidb"
+            destination="anidb",
         )
 
-        if mapping and 'anidb' in mapping:
-            anidb_data = mapping['anidb']
-            absolute = anidb_data.get('absolute')
+        if mapping and "anidb" in mapping:
+            anidb_data = mapping["anidb"]
+            absolute = anidb_data.get("absolute")
             if absolute:
                 logger.info(
                     f"TheXEM: TVDB {tvdb_id} S{season:02d}E{episode:02d} -> "

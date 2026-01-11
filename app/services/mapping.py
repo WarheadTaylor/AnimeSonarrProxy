@@ -1,4 +1,5 @@
 """Title mapping service with fallback and caching."""
+
 import json
 import logging
 from typing import Optional, List, Dict
@@ -9,6 +10,7 @@ from app.config import settings
 from app.models import AnimeMapping, AnimeTitle, MappingOverride
 from app.services.anime_db import anime_db
 from app.services.anilist import anilist_client
+from app.services.thexem import thexem_client
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ class MappingService:
         """Load cached mappings from file."""
         if self.mappings_file.exists():
             try:
-                with open(self.mappings_file, 'r', encoding='utf-8') as f:
+                with open(self.mappings_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for tvdb_id_str, mapping_data in data.items():
                         tvdb_id = int(tvdb_id_str)
@@ -45,10 +47,10 @@ class MappingService:
         try:
             settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
             data = {
-                str(tvdb_id): mapping.model_dump(mode='json')
+                str(tvdb_id): mapping.model_dump(mode="json")
                 for tvdb_id, mapping in self.cache.items()
             }
-            with open(self.mappings_file, 'w', encoding='utf-8') as f:
+            with open(self.mappings_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2, default=str)
             logger.debug(f"Saved {len(self.cache)} mappings to cache")
         except Exception as e:
@@ -58,7 +60,7 @@ class MappingService:
         """Load user overrides from file."""
         if self.overrides_file.exists():
             try:
-                with open(self.overrides_file, 'r', encoding='utf-8') as f:
+                with open(self.overrides_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for tvdb_id_str, override_data in data.items():
                         tvdb_id = int(tvdb_id_str)
@@ -73,10 +75,10 @@ class MappingService:
         try:
             settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
             data = {
-                str(tvdb_id): override_obj.model_dump(mode='json')
+                str(tvdb_id): override_obj.model_dump(mode="json")
                 for tvdb_id, override_obj in self.overrides.items()
             }
-            with open(self.overrides_file, 'w', encoding='utf-8') as f:
+            with open(self.overrides_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             logger.info(f"Saved override for TVDB ID {override.tvdb_id}")
 
@@ -115,12 +117,21 @@ class MappingService:
                 await self._cache_mapping(mapping)
                 return mapping
 
-        # Fallback: Check if we have AniList ID from override
-        # (This would require external TVDB->AniList mapping which we don't have)
+        # Fallback: Try TheXEM for show names
+        xem_names = await thexem_client.get_names_by_tvdb_id(tvdb_id)
+        if xem_names:
+            logger.info(f"Found mapping in TheXEM for TVDB {tvdb_id}: {xem_names}")
+            mapping = await self._create_mapping_from_thexem(tvdb_id, xem_names)
+            if mapping:
+                await self._cache_mapping(mapping)
+                return mapping
+
         logger.warning(f"No mapping found for TVDB {tvdb_id}")
         return None
 
-    async def _create_mapping_from_anime_db(self, tvdb_id: int, anime: Dict) -> Optional[AnimeMapping]:
+    async def _create_mapping_from_anime_db(
+        self, tvdb_id: int, anime: Dict
+    ) -> Optional[AnimeMapping]:
         """Create AnimeMapping from anime-offline-database entry."""
         ids = anime_db.extract_ids(anime)
         titles = anime_db.extract_titles(anime)
@@ -146,10 +157,41 @@ class MappingService:
             titles=titles,
             total_episodes=total_episodes,
             season_info=[],
-            user_override=False
+            user_override=False,
         )
 
-    async def _create_mapping_from_override(self, override: MappingOverride) -> Optional[AnimeMapping]:
+    async def _create_mapping_from_thexem(
+        self, tvdb_id: int, names: List[str]
+    ) -> Optional[AnimeMapping]:
+        """Create AnimeMapping from TheXEM names."""
+        if not names:
+            return None
+
+        # Use first name as primary title, rest as synonyms
+        primary_title = names[0]
+        synonyms = names[1:] if len(names) > 1 else []
+
+        titles = AnimeTitle(
+            romaji=primary_title,
+            english=None,
+            native=None,
+            synonyms=synonyms,
+        )
+
+        return AnimeMapping(
+            tvdb_id=tvdb_id,
+            anidb_id=None,
+            anilist_id=None,
+            mal_id=None,
+            titles=titles,
+            total_episodes=0,
+            season_info=[],
+            user_override=False,
+        )
+
+    async def _create_mapping_from_override(
+        self, override: MappingOverride
+    ) -> Optional[AnimeMapping]:
         """Create AnimeMapping from user override."""
         titles = AnimeTitle(synonyms=override.custom_titles)
 
@@ -157,7 +199,9 @@ class MappingService:
         total_episodes = 0
         if override.anilist_id:
             try:
-                anilist_data = await anilist_client.get_by_anilist_id(override.anilist_id)
+                anilist_data = await anilist_client.get_by_anilist_id(
+                    override.anilist_id
+                )
                 if anilist_data:
                     anilist_titles = anilist_client.extract_titles(anilist_data)
                     titles = self._merge_titles(titles, anilist_titles)
@@ -173,7 +217,7 @@ class MappingService:
             titles=titles,
             total_episodes=total_episodes,
             season_info=[],
-            user_override=True
+            user_override=True,
         )
 
     def _merge_titles(self, base: AnimeTitle, additional: AnimeTitle) -> AnimeTitle:
@@ -182,7 +226,7 @@ class MappingService:
             romaji=base.romaji or additional.romaji,
             english=base.english or additional.english,
             native=base.native or additional.native,
-            synonyms=list(set(base.synonyms + additional.synonyms))
+            synonyms=list(set(base.synonyms + additional.synonyms)),
         )
 
     async def _cache_mapping(self, mapping: AnimeMapping):
