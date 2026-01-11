@@ -51,8 +51,10 @@ async def torznab_api(
                 logger.info(f"tvsearch called without tvdbid, falling back to generic search with query: {q}")
                 return await handle_search(q, limit, offset)
             else:
-                logger.warning("tvsearch called without tvdbid or query string")
-                return create_empty_rss()
+                # Sonarr may call tvsearch without parameters during indexer testing
+                # Return recent anime results to pass the test
+                logger.info("tvsearch called without tvdbid or query string - returning default anime search for indexer test")
+                return await handle_search("anime", limit, offset)
 
         if season is None or ep is None:
             logger.warning(f"tvsearch called without season/ep for TVDB {tvdbid}")
