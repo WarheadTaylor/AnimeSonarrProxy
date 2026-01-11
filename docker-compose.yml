@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  animesonarrproxy:
+    build: .
+    container_name: animesonarrproxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - API_KEY=${API_KEY:-your-secret-api-key-here}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PROWLARR_URL=${PROWLARR_URL:-http://prowlarr:9696}
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - ANILIST_API_URL=https://graphql.anilist.co
+      - ANILIST_RATE_LIMIT=90
+      - DATA_DIR=/app/data
+      - ANIME_DB_UPDATE_INTERVAL=86400
+      - CACHE_TTL=3600
+      - MAPPING_CACHE_TTL=604800
+      - MAX_RESULTS_PER_QUERY=100
+      - ENABLE_DEDUPLICATION=true
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - anime-proxy-network
+
+networks:
+  anime-proxy-network:
+    driver: bridge
