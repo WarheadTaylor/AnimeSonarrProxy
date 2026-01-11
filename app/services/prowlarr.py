@@ -123,6 +123,7 @@ class ProwlarrClient:
         size = 0
         seeders = 0
         peers = 0
+        categories = []
 
         # Find torznab/newznab attributes
         for attr in item.findall('{http://torznab.com/schemas/2015/feed}attr'):
@@ -135,9 +136,24 @@ class ProwlarrClient:
                 seeders = int(value) if value and value.isdigit() else 0
             elif name == 'peers':
                 peers = int(value) if value and value.isdigit() else 0
+            elif name == 'category':
+                # Extract category and add to list
+                if value and value.isdigit():
+                    categories.append(int(value))
 
         # Parse publication date
         pub_date = self._parse_date(pub_date_str)
+
+        # If no categories found, default to 5070 (Anime)
+        if not categories:
+            categories = [5070]
+
+        # Filter: Only accept results with valid TV/Anime categories
+        # Valid categories: 5000 (TV), 5070 (TV > Anime)
+        valid_categories = {5000, 5070}
+        if not any(cat in valid_categories for cat in categories):
+            logger.debug(f"Skipping result '{title}' - invalid categories: {categories}")
+            return None
 
         # Try to extract indexer from enclosure url or other fields
         indexer = "prowlarr"
@@ -156,7 +172,8 @@ class ProwlarrClient:
             size=size,
             seeders=seeders,
             peers=peers,
-            indexer=indexer
+            indexer=indexer,
+            categories=categories
         )
 
     def _get_text(self, element: ET.Element, tag: str) -> str:
