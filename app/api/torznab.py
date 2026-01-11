@@ -37,14 +37,14 @@ async def torznab_api(
     - search: Generic search
     - tvsearch: TV search with anime title mapping
     """
-    # Validate API key
+    # Handle capabilities request (no auth required per Torznab spec)
+    if t == "caps":
+        return await handle_caps()
+
+    # Validate API key for all other requests
     if apikey != settings.API_KEY:
         logger.debug(f"Invalid API key attempt: {apikey}")
         raise HTTPException(status_code=403, detail="Invalid API key")
-
-    # Handle capabilities request
-    if t == "caps":
-        return await handle_caps()
 
     # Handle TV search (main use case)
     elif t == "tvsearch":
