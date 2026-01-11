@@ -53,7 +53,7 @@ class ProwlarrClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 url = f"{self.base_url}/api/v1/search"
-                logger.debug(f"Prowlarr request: {url} with params: {params}")
+                logger.info(f"Prowlarr request: GET {url}?q={query}&cat={','.join(map(str, categories))}&limit={limit}")
 
                 response = await client.get(url, params=params)
 
@@ -62,7 +62,14 @@ class ProwlarrClient:
 
                 # Parse JSON response from Prowlarr API
                 results = self._parse_json_response(response.text)
-                logger.info(f"Prowlarr search '{query}' returned {len(results)} results")
+
+                # Log first few result titles to help debug relevance issues
+                if results:
+                    sample_titles = [r.title for r in results[:3]]
+                    logger.info(f"Prowlarr search '{query}' returned {len(results)} results. Sample: {sample_titles}")
+                else:
+                    logger.info(f"Prowlarr search '{query}' returned 0 results")
+
                 return results
 
         except httpx.HTTPError as e:
