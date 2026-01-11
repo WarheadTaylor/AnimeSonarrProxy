@@ -48,9 +48,11 @@ async def torznab_api(
     elif t == "tvsearch":
         if tvdbid is None:
             # Fall back to generic search if query string is provided
+            # But pass season info for specials detection
             if q:
-                logger.info(f"tvsearch called without tvdbid, falling back to generic search with query: {q}")
-                return await handle_search(q, limit, offset)
+                is_special = (season == 0) if season is not None else False
+                logger.info(f"tvsearch called without tvdbid, falling back to generic search with query: {q}{' [SPECIAL]' if is_special else ''}")
+                return await handle_search(q, limit, offset, is_special=is_special)
             else:
                 # Sonarr may call tvsearch without parameters during indexer testing
                 # Return recent anime results to pass the test
@@ -141,27 +143,39 @@ async def handle_tvsearch(
         return create_empty_rss()
 
 
-async def handle_search(query: str, limit: int, offset: int) -> Response:
+async def handle_search(
+    query: str,
+    limit: int,
+    offset: int,
+    is_special: bool = False
+) -> Response:
     """
     Handle generic search with smart query parsing.
 
     Detects concatenated title queries from Sonarr and splits them intelligently.
+    For specials (season 0), adds OVA/Special/Movie keywords to the search.
     """
     logger.info(f"Generic search: {query}")
 
     try:
-        # Check if this looks like a concatenated query (common with Sonarr)
-        # Sonarr sometimes sends all alt titles concatenated together
+        # Parse the query to get a clean title
         search_queries = _parse_concatenated_query(query)
+        base_query = search_queries[0] if search_queries else query
 
-        if len(search_queries) > 1:
-            logger.info(f"Detected concatenated query, splitting into {len(search_queries)} searches")
-            # Execute multiple searches in parallel
+        # For specials, search with OVA/Special/Movie keywords
+        if is_special:
+            logger.info(f"Special detected - searching with OVA/Special/Movie keywords")
             import asyncio
-            tasks = [prowlarr_client.search(q, limit=limit) for q in search_queries[:5]]  # Limit to 5 queries
+            special_queries = [
+                f"{base_query} OVA",
+                f"{base_query} Special",
+                f"{base_query} Movie",
+                base_query,  # Also search without keywords in case it's labeled differently
+            ]
+            tasks = [prowlarr_client.search(q, limit=limit) for q in special_queries]
             results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Combine and deduplicate results
+            # Combine results
             all_results = []
             for results in results_lists:
                 if isinstance(results, Exception):
@@ -177,17 +191,16 @@ async def handle_search(query: str, limit: int, offset: int) -> Response:
                     seen_guids.add(result.guid)
                     unique_results.append(result)
 
-            # Filter out irrelevant results that don't match the search query
+            # Filter out irrelevant results
             relevant_results = filter_results_by_query(unique_results, query)
             logger.info(f"Relevance filter: {len(unique_results)} -> {len(relevant_results)} results")
 
-            # Sort by seeders (descending) then pub_date (descending, newer first)
+            # Sort and paginate
             relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
             paginated_results = relevant_results[offset:offset + limit]
         else:
-            # Single query - search and sort results
-            search_query = search_queries[0] if search_queries else query
-            results = await prowlarr_client.search(search_query, limit=limit)
+            # Regular search - single query
+            results = await prowlarr_client.search(base_query, limit=limit)
 
             # Filter out irrelevant results that don't match the search query
             relevant_results = filter_results_by_query(results, query)
