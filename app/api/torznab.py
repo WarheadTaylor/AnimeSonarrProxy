@@ -9,6 +9,7 @@ from app.models import TorznabQuery, SearchResult
 from app.services.mapping import mapping_service
 from app.services.query import query_service
 from app.services.prowlarr import prowlarr_client
+from app.services.anime_db import anime_db
 
 logger = logging.getLogger(__name__)
 
@@ -142,15 +143,47 @@ async def handle_tvsearch(
 
 async def handle_search(query: str, limit: int, offset: int) -> Response:
     """
-    Handle generic search - pass through to Prowlarr.
+    Handle generic search with smart query parsing.
 
-    This is for non-TV searches or manual queries.
+    Detects concatenated title queries from Sonarr and splits them intelligently.
     """
     logger.info(f"Generic search: {query}")
 
     try:
-        results = await prowlarr_client.search(query, limit=limit)
-        paginated_results = results[offset:offset + limit]
+        # Check if this looks like a concatenated query (common with Sonarr)
+        # Sonarr sometimes sends all alt titles concatenated together
+        search_queries = _parse_concatenated_query(query)
+
+        if len(search_queries) > 1:
+            logger.info(f"Detected concatenated query, splitting into {len(search_queries)} searches")
+            # Execute multiple searches in parallel
+            import asyncio
+            tasks = [prowlarr_client.search(q, limit=limit) for q in search_queries[:5]]  # Limit to 5 queries
+            results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Combine and deduplicate results
+            all_results = []
+            for results in results_lists:
+                if isinstance(results, Exception):
+                    logger.error(f"Query failed: {results}")
+                    continue
+                all_results.extend(results)
+
+            # Deduplicate by GUID
+            seen_guids = set()
+            unique_results = []
+            for result in all_results:
+                if result.guid not in seen_guids:
+                    seen_guids.add(result.guid)
+                    unique_results.append(result)
+
+            # Sort by seeders
+            unique_results.sort(key=lambda x: x.seeders, reverse=True)
+            paginated_results = unique_results[offset:offset + limit]
+        else:
+            # Single query - use as is
+            results = await prowlarr_client.search(search_queries[0] if search_queries else query, limit=limit)
+            paginated_results = results[offset:offset + limit]
 
         rss_xml = create_torznab_rss(paginated_results)
         return Response(content=rss_xml, media_type="application/xml")
@@ -158,6 +191,85 @@ async def handle_search(query: str, limit: int, offset: int) -> Response:
     except Exception as e:
         logger.error(f"Generic search failed: {e}", exc_info=True)
         return create_empty_rss()
+
+
+def _parse_concatenated_query(query: str) -> list[str]:
+    """
+    Parse a potentially concatenated query string into individual search terms.
+
+    Sonarr sometimes sends queries like:
+    "Kaguya sama wa Kokurasetai Tensai tachi no Renai Zunousen ABCs of Men and Women Kaguya Wants to Talk"
+
+    This function attempts to split such queries into meaningful parts.
+    """
+    # If query is short, just use it as-is
+    if len(query) < 50:
+        return [query]
+
+    words = query.split()
+    queries = []
+
+    # Strategy 0: Try to find the anime in our database first
+    # Try with progressively shorter prefixes of the query
+    for num_words in [6, 5, 4, 3]:
+        if len(words) >= num_words:
+            prefix = ' '.join(words[:num_words])
+            db_titles = anime_db.get_search_titles_for_query(prefix)
+            if db_titles:
+                logger.info(f"Found anime in database for query prefix '{prefix}': {db_titles}")
+                return db_titles
+
+    # Strategy 1: If query has "wa" or "no" early on (Japanese particles), it's likely
+    # a Japanese title followed by English variations
+    japanese_particles = ['wa', 'no', 'ga', 'ni', 'wo', 'de', 'to', 'mo', 'na']
+
+    # Try to find a natural break point
+    # Look for where Japanese title might end and English begins
+    for i, word in enumerate(words[:10]):  # Check first 10 words
+        if word.lower() in japanese_particles:
+            # Include a few more words after the particle to complete the title
+            # Japanese titles typically have structure like "X wa Y"
+            end_idx = min(i + 4, len(words))
+            japanese_title = ' '.join(words[:end_idx])
+            if len(japanese_title) >= 5:
+                queries.append(japanese_title)
+            break
+
+    # Strategy 2: Extract first N words as a potential title
+    if len(words) >= 3:
+        # Try first 3-4 words as a title
+        short_title = ' '.join(words[:4])
+        if short_title not in queries:
+            queries.append(short_title)
+
+    # Strategy 3: Look for capitalized word sequences that might be English titles
+    # "Kaguya Wants to Talk" vs "kaguya wants to talk"
+    current_phrase = []
+    for word in words:
+        if word[0].isupper() if word else False:
+            current_phrase.append(word)
+        else:
+            if len(current_phrase) >= 2:
+                phrase = ' '.join(current_phrase)
+                if phrase not in queries and len(phrase) >= 5:
+                    queries.append(phrase)
+            current_phrase = []
+
+    if len(current_phrase) >= 2:
+        phrase = ' '.join(current_phrase)
+        if phrase not in queries and len(phrase) >= 5:
+            queries.append(phrase)
+
+    # If we found potential titles, return them (limited)
+    if queries:
+        # Also add the original query shortened to first 30-40 chars
+        short_original = ' '.join(query.split()[:5])
+        if short_original not in queries:
+            queries.append(short_original)
+        return queries[:5]  # Max 5 different queries
+
+    # Fallback: just use first few words
+    return [' '.join(words[:5]) if len(words) > 5 else query]
 
 
 def create_torznab_rss(

@@ -134,6 +134,77 @@ class AnimeOfflineDatabase:
 
         return list(titles)
 
+    def search_by_title(self, query: str, limit: int = 5) -> List[Dict]:
+        """
+        Search for anime entries by partial title match.
+
+        Args:
+            query: Search query (partial title)
+            limit: Maximum number of results
+
+        Returns:
+            List of matching anime entries with match scores
+        """
+        query_lower = query.lower().strip()
+        if not query_lower or len(query_lower) < 3:
+            return []
+
+        matches = []
+        query_words = set(query_lower.split())
+
+        for anime in self.data.get('data', []):
+            title = anime.get('title', '').lower()
+            synonyms = [s.lower() for s in anime.get('synonyms', [])]
+            all_titles = [title] + synonyms
+
+            best_score = 0
+
+            for t in all_titles:
+                score = 0
+
+                # Exact match
+                if query_lower == t:
+                    score = 100
+                # Query is contained in title
+                elif query_lower in t:
+                    score = 80
+                # Title starts with query
+                elif t.startswith(query_lower):
+                    score = 70
+                # Word overlap scoring
+                else:
+                    title_words = set(t.split())
+                    overlap = query_words & title_words
+                    if overlap:
+                        score = len(overlap) / max(len(query_words), 1) * 50
+
+                best_score = max(best_score, score)
+
+            if best_score > 20:
+                matches.append({
+                    'anime': anime,
+                    'score': best_score
+                })
+
+        # Sort by score descending
+        matches.sort(key=lambda x: x['score'], reverse=True)
+
+        return [m['anime'] for m in matches[:limit]]
+
+    def get_search_titles_for_query(self, query: str) -> List[str]:
+        """
+        Try to identify anime from query and return optimal search titles.
+
+        This is useful when Sonarr sends a generic search with a long/concatenated query.
+        """
+        matches = self.search_by_title(query, limit=1)
+        if matches:
+            anime = matches[0]
+            titles = self.get_all_titles(anime)
+            # Return the main title and first synonym
+            return titles[:2] if len(titles) > 1 else titles
+        return []
+
 
 # Singleton instance
 anime_db = AnimeOfflineDatabase()
