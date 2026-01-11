@@ -190,28 +190,39 @@ async def handle_tvsearch_special(
         if sonarr_client.is_configured():
             # Key insight: Sonarr often sends the episode number within the season
             # (e.g., q=01 for S2E01), not the absolute episode number.
-            # First, try to find a wanted episode with this episode number.
-            wanted_episode = await sonarr_client.get_wanted_episode_by_episode_number(
+            # Find ALL wanted episodes with this episode number (could be multiple seasons).
+            wanted_episodes = await sonarr_client.get_wanted_episodes_by_episode_number(
                 tvdb_id, query_num
             )
 
-            if wanted_episode and wanted_episode.absolute_episode_number:
-                # Found the wanted episode - use its absolute episode number
-                absolute_ep = wanted_episode.absolute_episode_number
-                logger.info(
-                    f"Resolved q={query_num} to wanted episode "
-                    f"S{wanted_episode.season_number:02d}E{wanted_episode.episode_number:02d} "
-                    f"(abs={absolute_ep})"
-                )
+            if wanted_episodes:
+                # Get absolute episode numbers from all wanted episodes
+                absolute_eps = [
+                    ep.absolute_episode_number
+                    for ep in wanted_episodes
+                    if ep.absolute_episode_number is not None
+                ]
 
-                if wanted_episode.is_special:
-                    return await _search_for_special(
-                        tvdb_id, titles, absolute_ep, limit, offset
+                # Check if any are specials
+                has_specials = any(ep.is_special for ep in wanted_episodes)
+
+                if absolute_eps:
+                    ep_info = ", ".join(
+                        f"S{ep.season_number:02d}E{ep.episode_number:02d}(abs={ep.absolute_episode_number})"
+                        for ep in wanted_episodes
                     )
-                else:
-                    return await _search_for_absolute_episode(
-                        tvdb_id, titles, absolute_ep, limit, offset
-                    )
+                    logger.info(f"Resolved q={query_num} to wanted episodes: {ep_info}")
+
+                    if has_specials:
+                        # If any are specials, search for specials
+                        return await _search_for_special(
+                            tvdb_id, titles, absolute_eps[0], limit, offset
+                        )
+                    else:
+                        # Search for all absolute episode numbers
+                        return await _search_for_absolute_episodes(
+                            tvdb_id, titles, absolute_eps, limit, offset
+                        )
 
             # Fallback: Try as absolute episode number
             episode_info = await sonarr_client.get_episode_by_absolute_number(
@@ -232,8 +243,8 @@ async def handle_tvsearch_special(
                         f"Query {query_num} is absolute episode, regular "
                         f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
                     )
-                    return await _search_for_absolute_episode(
-                        tvdb_id, titles, query_num, limit, offset
+                    return await _search_for_absolute_episodes(
+                        tvdb_id, titles, [query_num], limit, offset
                     )
             else:
                 # Episode not found by either method - use query as-is
@@ -241,16 +252,16 @@ async def handle_tvsearch_special(
                     f"Episode {query_num} not found in Sonarr, "
                     f"treating as absolute episode search"
                 )
-                return await _search_for_absolute_episode(
-                    tvdb_id, titles, query_num, limit, offset
+                return await _search_for_absolute_episodes(
+                    tvdb_id, titles, [query_num], limit, offset
                 )
         else:
             # Sonarr not configured - default to treating query as absolute episode
             logger.info(
                 f"Sonarr not configured, treating query '{query}' as absolute episode {query_num}"
             )
-            return await _search_for_absolute_episode(
-                tvdb_id, titles, query_num, limit, offset
+            return await _search_for_absolute_episodes(
+                tvdb_id, titles, [query_num], limit, offset
             )
 
     # Non-numeric query or no query - treat as special search
@@ -299,27 +310,35 @@ def _filter_season_titles(titles: list[str]) -> list[str]:
     return filtered
 
 
-async def _search_for_absolute_episode(
+async def _search_for_absolute_episodes(
     tvdb_id: int,
     titles: list[str],
-    absolute_ep: int,
+    absolute_eps: list[int],
     limit: int,
     offset: int,
 ) -> Response:
     """
-    Search for a regular episode using absolute episode number.
+    Search for regular episodes using absolute episode numbers.
 
-    Builds queries like "Title 39" for each title variant.
+    Handles multiple episode numbers (e.g., when both S02E01 and S03E01 are wanted).
+    Builds queries like "Title 26", "Title 51" for each title + episode combination.
     """
     import asyncio
 
-    logger.info(f"Absolute episode search: TVDB {tvdb_id} episode {absolute_ep}")
+    logger.info(f"Absolute episode search: TVDB {tvdb_id} episodes {absolute_eps}")
 
     # Filter out season-specific titles to avoid wrong results
     filtered_titles = _filter_season_titles(titles)
 
-    # Build queries for each title variant (limit to prevent too many requests)
-    episode_queries = [f"{title} {absolute_ep}" for title in filtered_titles[:4]]
+    # Build queries for each title + episode combination
+    # Limit titles to prevent too many requests
+    episode_queries = []
+    for ep in absolute_eps:
+        for title in filtered_titles[:3]:  # Max 3 titles per episode
+            episode_queries.append(f"{title} {ep}")
+
+    # Cap total queries to prevent excessive API calls
+    episode_queries = episode_queries[:8]
 
     logger.info(f"Absolute episode search queries: {episode_queries}")
 

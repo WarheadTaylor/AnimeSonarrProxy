@@ -227,37 +227,38 @@ class SonarrClient:
         )
         return None
 
-    async def get_wanted_episode_by_episode_number(
+    async def get_wanted_episodes_by_episode_number(
         self, tvdb_id: int, episode_num: int
-    ) -> Optional[EpisodeInfo]:
+    ) -> List[EpisodeInfo]:
         """
-        Find the wanted (monitored + missing) episode with the given episode number.
+        Find all wanted (monitored + missing) episodes with the given episode number.
 
         When Sonarr sends q=01 without season info, it's the episode number within
-        a season, not the absolute number. This method finds which season's episode
-        is actually being searched (the one that's monitored but missing).
+        a season, not the absolute number. This method finds ALL seasons' episodes
+        that match and are wanted (e.g., both S02E01 and S03E01 if both are missing).
 
         Args:
             tvdb_id: TVDB series ID
             episode_num: Episode number within season (e.g., 1 for S2E01)
 
         Returns:
-            EpisodeInfo for the wanted episode, or None if not found
+            List of EpisodeInfo for all wanted episodes with that episode number.
+            Returns empty list if none found.
         """
         if not self.is_configured():
-            return None
+            return []
 
         series = await self.get_series_by_tvdb_id(tvdb_id)
         if not series:
-            return None
+            return []
 
         series_id = series.get("id")
         if not series_id:
-            return None
+            return []
 
         episodes = await self.get_episodes_by_series_id(series_id)
         if not episodes:
-            return None
+            return []
 
         # Find all episodes with the matching episode number (could be S1E01, S2E01, etc.)
         candidates = []
@@ -269,7 +270,7 @@ class SonarrClient:
             logger.debug(
                 f"No episodes with episodeNumber={episode_num} found for TVDB {tvdb_id}"
             )
-            return None
+            return []
 
         candidate_names = [
             f"S{ep.get('seasonNumber')}E{ep.get('episodeNumber')}" for ep in candidates
@@ -286,16 +287,16 @@ class SonarrClient:
         ]
 
         if wanted:
-            # If multiple wanted, prefer the most recent season (likely what user is searching)
-            wanted.sort(key=lambda x: x.get("seasonNumber", 0), reverse=True)
-            best_match = wanted[0]
-            episode_info = EpisodeInfo.from_sonarr_response(best_match, series)
+            # Return ALL wanted episodes (could be multiple seasons)
+            results = [EpisodeInfo.from_sonarr_response(ep, series) for ep in wanted]
+            wanted_names = [
+                f"S{e.season_number:02d}E{e.episode_number:02d}(abs={e.absolute_episode_number})"
+                for e in results
+            ]
             logger.info(
-                f"Found wanted episode: TVDB {tvdb_id} episodeNumber={episode_num} -> "
-                f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d} "
-                f"(abs={episode_info.absolute_episode_number})"
+                f"Found {len(results)} wanted episodes for episodeNumber={episode_num}: {wanted_names}"
             )
-            return episode_info
+            return results
 
         # No wanted episodes - fall back to the most recent season's episode
         # (User might be re-searching for an episode they already have)
@@ -307,7 +308,7 @@ class SonarrClient:
             f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d} "
             f"(abs={episode_info.absolute_episode_number})"
         )
-        return episode_info
+        return [episode_info]
 
     def clear_cache(self):
         """Clear all cached data."""
