@@ -227,6 +227,86 @@ class SonarrClient:
         )
         return None
 
+    async def get_wanted_episode_by_episode_number(
+        self, tvdb_id: int, episode_num: int
+    ) -> Optional[EpisodeInfo]:
+        """
+        Find the wanted (monitored + missing) episode with the given episode number.
+
+        When Sonarr sends q=01 without season info, it's the episode number within
+        a season, not the absolute number. This method finds which season's episode
+        is actually being searched (the one that's monitored but missing).
+
+        Args:
+            tvdb_id: TVDB series ID
+            episode_num: Episode number within season (e.g., 1 for S2E01)
+
+        Returns:
+            EpisodeInfo for the wanted episode, or None if not found
+        """
+        if not self.is_configured():
+            return None
+
+        series = await self.get_series_by_tvdb_id(tvdb_id)
+        if not series:
+            return None
+
+        series_id = series.get("id")
+        if not series_id:
+            return None
+
+        episodes = await self.get_episodes_by_series_id(series_id)
+        if not episodes:
+            return None
+
+        # Find all episodes with the matching episode number (could be S1E01, S2E01, etc.)
+        candidates = []
+        for ep in episodes:
+            if ep.get("episodeNumber") == episode_num and ep.get("seasonNumber", 0) > 0:
+                candidates.append(ep)
+
+        if not candidates:
+            logger.debug(
+                f"No episodes with episodeNumber={episode_num} found for TVDB {tvdb_id}"
+            )
+            return None
+
+        logger.debug(
+            f"Found {len(candidates)} episodes with episodeNumber={episode_num}: "
+            f"{[f'S{ep.get("seasonNumber")}E{ep.get("episodeNumber")}' for ep in candidates]}"
+        )
+
+        # Filter to monitored episodes without files (wanted/missing)
+        wanted = [
+            ep
+            for ep in candidates
+            if ep.get("monitored", False) and not ep.get("hasFile", True)
+        ]
+
+        if wanted:
+            # If multiple wanted, prefer the most recent season (likely what user is searching)
+            wanted.sort(key=lambda x: x.get("seasonNumber", 0), reverse=True)
+            best_match = wanted[0]
+            episode_info = EpisodeInfo.from_sonarr_response(best_match, series)
+            logger.info(
+                f"Found wanted episode: TVDB {tvdb_id} episodeNumber={episode_num} -> "
+                f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d} "
+                f"(abs={episode_info.absolute_episode_number})"
+            )
+            return episode_info
+
+        # No wanted episodes - fall back to the most recent season's episode
+        # (User might be re-searching for an episode they already have)
+        candidates.sort(key=lambda x: x.get("seasonNumber", 0), reverse=True)
+        best_match = candidates[0]
+        episode_info = EpisodeInfo.from_sonarr_response(best_match, series)
+        logger.info(
+            f"No wanted episodes, using most recent: TVDB {tvdb_id} episodeNumber={episode_num} -> "
+            f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d} "
+            f"(abs={episode_info.absolute_episode_number})"
+        )
+        return episode_info
+
     def clear_cache(self):
         """Clear all cached data."""
         self._series_cache.clear()

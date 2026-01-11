@@ -178,62 +178,125 @@ async def handle_tvsearch_special(
 
     primary_title = titles[0]
 
-    # Check if query looks like an absolute episode number
-    is_potential_absolute_ep = (
+    # Check if query looks like an episode number
+    is_potential_episode_num = (
         query and query.strip().isdigit() and int(query.strip()) > 0
     )
 
-    if is_potential_absolute_ep:
-        absolute_ep = int(query.strip())
+    if is_potential_episode_num:
+        query_num = int(query.strip())
 
         # Try Sonarr lookup if configured
         if sonarr_client.is_configured():
-            episode_info = await sonarr_client.get_episode_by_absolute_number(
-                tvdb_id, absolute_ep
+            # Key insight: Sonarr often sends the episode number within the season
+            # (e.g., q=01 for S2E01), not the absolute episode number.
+            # First, try to find a wanted episode with this episode number.
+            wanted_episode = await sonarr_client.get_wanted_episode_by_episode_number(
+                tvdb_id, query_num
             )
 
-            if episode_info:
-                if episode_info.is_special:
-                    # Confirmed special - use OVA/Special search
-                    logger.info(
-                        f"Sonarr confirms episode {absolute_ep} is a special "
-                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
-                    )
+            if wanted_episode and wanted_episode.absolute_episode_number:
+                # Found the wanted episode - use its absolute episode number
+                absolute_ep = wanted_episode.absolute_episode_number
+                logger.info(
+                    f"Resolved q={query_num} to wanted episode "
+                    f"S{wanted_episode.season_number:02d}E{wanted_episode.episode_number:02d} "
+                    f"(abs={absolute_ep})"
+                )
+
+                if wanted_episode.is_special:
                     return await _search_for_special(
                         tvdb_id, titles, absolute_ep, limit, offset
                     )
                 else:
-                    # Regular episode - search with title + episode number
-                    logger.info(
-                        f"Sonarr confirms episode {absolute_ep} is regular "
-                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
-                    )
                     return await _search_for_absolute_episode(
                         tvdb_id, titles, absolute_ep, limit, offset
                     )
+
+            # Fallback: Try as absolute episode number
+            episode_info = await sonarr_client.get_episode_by_absolute_number(
+                tvdb_id, query_num
+            )
+
+            if episode_info:
+                if episode_info.is_special:
+                    logger.info(
+                        f"Query {query_num} is absolute episode, special "
+                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
+                    )
+                    return await _search_for_special(
+                        tvdb_id, titles, query_num, limit, offset
+                    )
+                else:
+                    logger.info(
+                        f"Query {query_num} is absolute episode, regular "
+                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
+                    )
+                    return await _search_for_absolute_episode(
+                        tvdb_id, titles, query_num, limit, offset
+                    )
             else:
-                # Episode not found in Sonarr - might be a future episode or error
-                # Default to absolute episode search (most common case for anime)
+                # Episode not found by either method - use query as-is
                 logger.info(
-                    f"Episode {absolute_ep} not found in Sonarr, "
+                    f"Episode {query_num} not found in Sonarr, "
                     f"treating as absolute episode search"
                 )
                 return await _search_for_absolute_episode(
-                    tvdb_id, titles, absolute_ep, limit, offset
+                    tvdb_id, titles, query_num, limit, offset
                 )
         else:
-            # Sonarr not configured - default to absolute episode search for numeric queries
-            # This is the most likely scenario for anime
+            # Sonarr not configured - default to treating query as absolute episode
             logger.info(
-                f"Sonarr not configured, treating query '{query}' as absolute episode {absolute_ep}"
+                f"Sonarr not configured, treating query '{query}' as absolute episode {query_num}"
             )
             return await _search_for_absolute_episode(
-                tvdb_id, titles, absolute_ep, limit, offset
+                tvdb_id, titles, query_num, limit, offset
             )
 
     # Non-numeric query or no query - treat as special search
     logger.info(f"Searching for specials using title: {primary_title}")
     return await _search_for_special(tvdb_id, titles, None, limit, offset)
+
+
+def _filter_season_titles(titles: list[str]) -> list[str]:
+    """
+    Filter out season-specific title variants to avoid polluting searches.
+
+    Titles like "Bakuman S2", "Bakuman S3", "Bakuman Season 2" will return
+    results for that specific season, which is wrong when searching for
+    a specific episode by absolute number.
+
+    Args:
+        titles: List of title variants
+
+    Returns:
+        Filtered list with season-specific titles removed
+    """
+    import re
+
+    # Pattern to match season indicators
+    # Matches: S2, S3, S02, S03, Season 2, Season 3, 2nd Season, 3rd Season
+    season_pattern = re.compile(
+        r"\b(S\d+|Season\s*\d+|\d+(st|nd|rd|th)\s*Season)\b", re.IGNORECASE
+    )
+
+    filtered = []
+    removed = []
+
+    for title in titles:
+        if season_pattern.search(title):
+            removed.append(title)
+        else:
+            filtered.append(title)
+
+    if removed:
+        logger.debug(f"Filtered out season-specific titles: {removed}")
+
+    # Always return at least one title (the first one, even if it has season info)
+    if not filtered and titles:
+        filtered = [titles[0]]
+
+    return filtered
 
 
 async def _search_for_absolute_episode(
@@ -252,8 +315,11 @@ async def _search_for_absolute_episode(
 
     logger.info(f"Absolute episode search: TVDB {tvdb_id} episode {absolute_ep}")
 
+    # Filter out season-specific titles to avoid wrong results
+    filtered_titles = _filter_season_titles(titles)
+
     # Build queries for each title variant (limit to prevent too many requests)
-    episode_queries = [f"{title} {absolute_ep}" for title in titles[:4]]
+    episode_queries = [f"{title} {absolute_ep}" for title in filtered_titles[:4]]
 
     logger.info(f"Absolute episode search queries: {episode_queries}")
 
@@ -493,15 +559,34 @@ def _parse_concatenated_query(query: str) -> list[str]:
 
 def _is_season_zero_query(query: str) -> bool:
     """
-    Detect if query is a Season 0 episode search.
+    Detect if query is a Season 0 (special) episode search.
 
-    Sonarr appends episode numbers like "00", "01", "02" for Season 0.
-    Pattern: query ends with space + two digits where first digit is 0
-    e.g., "Kaguya sama 00", "Attack on Titan 01"
+    Sonarr may append episode numbers like "00" for Season 0 specials.
+    We need to be careful not to match regular episode numbers.
+
+    Rules:
+    - " 00" at end -> Season 0 special episode 0
+    - " 0X" at end WITH a season indicator (S1, S2, etc.) -> NOT Season 0
+    - " 0X" at end WITHOUT season indicator -> Ambiguous, assume NOT Season 0
+      (regular episode numbers are more common than specials)
+
+    e.g., "Kaguya sama 00" -> Season 0 (special)
+          "Bakuman S2 01" -> NOT Season 0 (regular S2E01)
+          "Bakuman 01" -> NOT Season 0 (probably regular episode)
     """
-    # Match queries ending with " 0X" where X is a digit (season 0 episodes)
-    # Also match " 00" specifically
-    return bool(re.search(r"\s+0\d$", query))
+    # Only match " 00" specifically - this is clearly special episode 0
+    # Other patterns like " 01", " 02" are too ambiguous and often wrong
+    if re.search(r"\s+00$", query):
+        return True
+
+    # Don't match queries with season indicators - those are regular episodes
+    # E.g., "Bakuman S2 01" should NOT be treated as Season 0
+    if re.search(r"\bS\d+\b", query, re.IGNORECASE):
+        return False
+
+    # For other " 0X" patterns, be conservative - assume NOT Season 0
+    # The user searching for "Bakuman 01" probably wants episode 1, not special 1
+    return False
 
 
 def _strip_season_zero_suffix(query: str) -> str:
