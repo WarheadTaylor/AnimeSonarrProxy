@@ -1,13 +1,28 @@
 """Query builder and result deduplication for multi-query searches."""
 import logging
 import asyncio
-from typing import List, Dict, Set
+import re
+from typing import List, Dict, Set, Optional
 from app.config import settings
 from app.models import AnimeMapping, SearchResult
 from app.services.prowlarr import prowlarr_client
 from app.services.episode import get_episode_translator
 
 logger = logging.getLogger(__name__)
+
+# Common words to ignore when checking relevance
+STOP_WORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+    'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+    'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
+    'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it',
+    'we', 'they', 'what', 'which', 'who', 'whom', 'where', 'when', 'why',
+    'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+    'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
+    'than', 'too', 'very', 'just', 'season', 'episode', 'ep', 'vol',
+    'volume', 'part', 'chapter', 's01', 's02', 's03', 's04', 's1', 's2',
+}
 
 
 class QueryService:
@@ -56,13 +71,17 @@ class QueryService:
         # Execute all queries in parallel
         all_results = await self._execute_queries(queries)
 
+        # Filter out irrelevant results (results that don't match any search title)
+        relevant_results = self.filter_relevant_results(all_results, titles)
+        logger.info(f"Relevance filter: {len(all_results)} -> {len(relevant_results)} results")
+
         # Deduplicate results
         if settings.ENABLE_DEDUPLICATION:
-            deduplicated = self._deduplicate_results(all_results)
-            logger.info(f"Deduplicated {len(all_results)} results to {len(deduplicated)}")
+            deduplicated = self._deduplicate_results(relevant_results)
+            logger.info(f"Deduplicated {len(relevant_results)} results to {len(deduplicated)}")
             return deduplicated
         else:
-            return all_results
+            return relevant_results
 
     def _get_search_titles(self, mapping: AnimeMapping) -> List[str]:
         """Extract and prioritize title variations for searching."""
@@ -212,6 +231,129 @@ class QueryService:
         normalized = ' '.join(normalized.split())
 
         return normalized.strip()
+
+    def filter_relevant_results(
+        self,
+        results: List[SearchResult],
+        search_titles: List[str],
+        min_keyword_match: int = 1
+    ) -> List[SearchResult]:
+        """
+        Filter results to only include those relevant to the search titles.
+
+        Args:
+            results: List of search results to filter
+            search_titles: List of title variations we searched for
+            min_keyword_match: Minimum number of keywords that must match
+
+        Returns:
+            Filtered list of relevant results
+        """
+        if not results or not search_titles:
+            return results
+
+        # Extract significant keywords from all search titles
+        search_keywords = self._extract_keywords(search_titles)
+        if not search_keywords:
+            logger.warning("No significant keywords found in search titles")
+            return results
+
+        logger.debug(f"Filtering results with keywords: {search_keywords}")
+
+        relevant_results = []
+        for result in results:
+            if self._is_result_relevant(result.title, search_keywords, min_keyword_match):
+                relevant_results.append(result)
+            else:
+                logger.debug(f"Filtered out irrelevant result: {result.title}")
+
+        filtered_count = len(results) - len(relevant_results)
+        if filtered_count > 0:
+            logger.info(f"Filtered out {filtered_count} irrelevant results (kept {len(relevant_results)})")
+
+        return relevant_results
+
+    def _extract_keywords(self, titles: List[str]) -> Set[str]:
+        """
+        Extract significant keywords from title strings.
+
+        Removes stop words, numbers, and short words.
+        """
+        keywords = set()
+
+        for title in titles:
+            # Remove episode numbers and common patterns
+            cleaned = re.sub(r'\b\d+\b', '', title)  # Remove standalone numbers
+            cleaned = re.sub(r'[^\w\s]', ' ', cleaned)  # Remove punctuation
+
+            words = cleaned.lower().split()
+            for word in words:
+                # Skip stop words and very short words
+                if word not in STOP_WORDS and len(word) >= 3:
+                    keywords.add(word)
+
+        return keywords
+
+    def _is_result_relevant(
+        self,
+        result_title: str,
+        search_keywords: Set[str],
+        min_match: int = 1
+    ) -> bool:
+        """
+        Check if a result title is relevant to the search keywords.
+
+        Args:
+            result_title: The title of the search result
+            search_keywords: Set of keywords we're looking for
+            min_match: Minimum number of keywords that must match
+
+        Returns:
+            True if the result is relevant
+        """
+        # Clean and extract words from result title
+        cleaned = re.sub(r'[^\w\s]', ' ', result_title.lower())
+        result_words = set(cleaned.split())
+
+        # Count matching keywords
+        matches = search_keywords & result_words
+        match_count = len(matches)
+
+        # Also check for partial matches (keyword is substring of result word)
+        # This handles cases like "Kaguya" matching "Kaguya-sama"
+        for keyword in search_keywords:
+            if keyword not in matches:
+                for result_word in result_words:
+                    if keyword in result_word or result_word in keyword:
+                        match_count += 1
+                        break
+
+        return match_count >= min_match
+
+
+def filter_results_by_query(
+    results: List[SearchResult],
+    query: str,
+    min_keyword_match: int = 1
+) -> List[SearchResult]:
+    """
+    Standalone function to filter results based on a query string.
+
+    Useful for generic searches where we don't have an AnimeMapping.
+
+    Args:
+        results: List of search results to filter
+        query: The search query string
+        min_keyword_match: Minimum number of keywords that must match
+
+    Returns:
+        Filtered list of relevant results
+    """
+    return query_service.filter_relevant_results(
+        results,
+        [query],
+        min_keyword_match
+    )
 
 
 # Singleton instance
