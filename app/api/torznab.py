@@ -177,12 +177,14 @@ async def handle_search(query: str, limit: int, offset: int) -> Response:
                     seen_guids.add(result.guid)
                     unique_results.append(result)
 
-            # Sort by seeders
-            unique_results.sort(key=lambda x: x.seeders, reverse=True)
+            # Sort by seeders (descending) then pub_date (descending, newer first)
+            unique_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
             paginated_results = unique_results[offset:offset + limit]
         else:
-            # Single query - use as is
+            # Single query - search and sort results
             results = await prowlarr_client.search(search_queries[0] if search_queries else query, limit=limit)
+            # Sort by seeders (descending) then pub_date (descending, newer first)
+            results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
             paginated_results = results[offset:offset + limit]
 
         rss_xml = create_torznab_rss(paginated_results)
