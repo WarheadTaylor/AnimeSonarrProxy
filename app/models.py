@@ -62,6 +62,7 @@ class SearchResult(BaseModel):
     seeders: int = 0
     peers: int = 0
     indexer: str = ""
+    categories: List[int] = Field(default_factory=lambda: [5070])  # TV > Anime
 
     def to_torznab_item(self, tvdbid: Optional[int] = None, season: Optional[int] = None, episode: Optional[int] = None) -> TorznabItem:
         """Convert to Torznab format."""

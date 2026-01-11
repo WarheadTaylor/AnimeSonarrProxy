@@ -182,8 +182,9 @@ def create_torznab_rss(
         SubElement(item, "torznab:attr", name="seeders", value=str(result.seeders))
         SubElement(item, "torznab:attr", name="peers", value=str(result.peers))
 
-        # Category
-        SubElement(item, "torznab:attr", name="category", value="5070")
+        # Categories - use actual categories from the result
+        for category in result.categories:
+            SubElement(item, "torznab:attr", name="category", value=str(category))
 
         # Add TVDB metadata if available
         if tvdbid:
