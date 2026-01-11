@@ -42,20 +42,25 @@ class ProwlarrClient:
         if categories is None:
             categories = [5070]  # TV > Anime
 
+        # Prowlarr's /api/v1/search uses 'query' not 'q' (unlike Torznab API)
         params = {
-            "t": "search",
-            "q": query,
-            "apikey": self.api_key,
+            "query": query,
+            "categories": categories,
             "limit": limit,
-            "cat": ",".join(map(str, categories))
+            "type": "search"
+        }
+
+        # Prowlarr API key goes in header, not query params
+        headers = {
+            "X-Api-Key": self.api_key
         }
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 url = f"{self.base_url}/api/v1/search"
-                logger.info(f"Prowlarr request: GET {url}?q={query}&cat={','.join(map(str, categories))}&limit={limit}")
+                logger.info(f"Prowlarr request: GET {url}?query={query}&categories={categories}&limit={limit}")
 
-                response = await client.get(url, params=params)
+                response = await client.get(url, params=params, headers=headers)
 
                 logger.debug(f"Prowlarr response: status={response.status_code}, content-type={response.headers.get('content-type')}")
                 response.raise_for_status()
