@@ -20,6 +20,9 @@ class TheXEMClient:
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.cache_ttl = timedelta(days=7)  # Cache XEM data for 7 days
         self.cache_file = settings.DATA_DIR / "thexem_cache.json"
+        self.headers = {
+            "User-Agent": "AnimeSonarrProxy/1.0 (https://github.com/WarheadTaylor/AnimeSonarrProxy)"
+        }
         self._load_cache()
 
     def _load_cache(self):
@@ -101,7 +104,7 @@ class TheXEMClient:
         params = {"id": show_id, "origin": origin}
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, headers=self.headers) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
 
@@ -181,7 +184,7 @@ class TheXEMClient:
         url = f"{self.base_url}/map/single"
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, headers=self.headers) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
 
@@ -225,6 +228,22 @@ class TheXEMClient:
                 f"Found {len(names)} names for TVDB {tvdb_id} from TheXEM: {names}"
             )
             return names
+
+        # Fallback: Try without defaultNames (might have fewer restrictions)
+        all_names = await self.get_all_names(origin="tvdb", default_names=False)
+        if all_names and tvdb_id in all_names:
+            names = all_names[tvdb_id]
+            logger.info(
+                f"Found {len(names)} names for TVDB {tvdb_id} from TheXEM (no defaults): {names}"
+            )
+            return names
+
+        # Check if show exists in TheXEM via map/all (validates show is tracked)
+        mappings = await self.get_all_mappings(tvdb_id, origin="tvdb")
+        if mappings:
+            logger.info(
+                f"Show TVDB {tvdb_id} exists in TheXEM (has {len(mappings)} episode mappings) but no names found"
+            )
 
         logger.debug(f"No names found in TheXEM for TVDB {tvdb_id}")
         return None
@@ -272,7 +291,7 @@ class TheXEMClient:
         url = f"{self.base_url}/map/allNames"
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=15.0, headers=self.headers) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
 
