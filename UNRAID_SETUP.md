@@ -29,7 +29,7 @@ This guide will walk you through setting up AnimeSonarrProxy on Unraid using Doc
 
    services:
      animesonarrproxy:
-       image: ghcr.io/yourusername/animesonarrproxy:latest  # Update when published
+       image: ghcr.io/warheadtaylor/animesonarrproxy:latest
        container_name: animesonarrproxy
        restart: unless-stopped
        ports:
@@ -72,7 +72,7 @@ This guide will walk you through setting up AnimeSonarrProxy on Unraid using Doc
 
 2. **Configure Container**
    - **Name:** `animesonarrproxy`
-   - **Repository:** `ghcr.io/yourusername/animesonarrproxy:latest`
+   - **Repository:** `ghcr.io/warheadtaylor/animesonarrproxy:latest`
    - **Network Type:** `Bridge`
 
 3. **Add Ports**

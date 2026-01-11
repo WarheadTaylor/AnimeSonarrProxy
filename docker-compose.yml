@@ -2,7 +2,12 @@ version: '3.8'
 
 services:
   animesonarrproxy:
-    build: .
+    # Use pre-built image from GitHub Container Registry
+    image: ghcr.io/warheadtaylor/animesonarrproxy:latest
+
+    # OR build from source (comment out 'image' above and uncomment 'build' below)
+    # build: .
+
     container_name: animesonarrproxy
     restart: unless-stopped
     ports:

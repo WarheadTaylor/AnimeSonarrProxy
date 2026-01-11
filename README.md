@@ -1,5 +1,9 @@
 # AnimeSonarrProxy
 
+[![Docker Build](https://github.com/WarheadTaylor/AnimeSonarrProxy/actions/workflows/docker-build.yml/badge.svg)](https://github.com/WarheadTaylor/AnimeSonarrProxy/actions/workflows/docker-build.yml)
+[![GitHub release](https://img.shields.io/github/v/release/WarheadTaylor/AnimeSonarrProxy)](https://github.com/WarheadTaylor/AnimeSonarrProxy/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anime search results. It translates Sonarr's TVDB-based queries into anime-friendly searches using title mappings and absolute episode numbering.
 
 ## Features
@@ -26,19 +30,40 @@ Sonarr → AnimeSonarrProxy (Torznab API) → Prowlarr → Nyaa
 
 ## Quick Start
 
-### Docker (Recommended)
+### Docker with Pre-built Image (Recommended)
+
+```bash
+# Create a directory for the project
+mkdir animesonarrproxy && cd animesonarrproxy
+
+# Download docker-compose.yml
+curl -O https://raw.githubusercontent.com/WarheadTaylor/AnimeSonarrProxy/main/docker-compose.yml
+
+# Create .env file
+curl -O https://raw.githubusercontent.com/WarheadTaylor/AnimeSonarrProxy/main/.env.example
+mv .env.example .env
+# Edit .env with your Prowlarr settings
+
+# Start with Docker Compose
+docker-compose up -d
+
+# Access WebUI
+http://localhost:8000
+```
+
+### Docker from Source
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/AnimeSonarrProxy.git
+git clone https://github.com/WarheadTaylor/AnimeSonarrProxy.git
 cd AnimeSonarrProxy
 
 # Create .env file
 cp .env.example .env
 # Edit .env with your Prowlarr settings
 
-# Start with Docker Compose
-docker-compose up -d
+# Build and start
+docker-compose up -d --build
 
 # Access WebUI
 http://localhost:8000
