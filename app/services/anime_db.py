@@ -93,11 +93,23 @@ class AnimeOfflineDatabase:
         return self._tvdb_index.get(tvdb_id)
 
     def extract_ids(self, anime: Dict) -> Dict[str, Optional[int]]:
-        """Extract AniList and MAL IDs from anime entry."""
-        ids = {"anilist_id": None, "mal_id": None}
+        """Extract AniDB, AniList and MAL IDs from anime entry."""
+        ids = {"anidb_id": None, "anilist_id": None, "mal_id": None}
 
         for source in anime.get('sources', []):
-            if 'anilist.co/anime/' in source:
+            if 'anidb.net/anime/' in source or 'anidb.net/perl-bin/animedb.pl?show=anime&aid=' in source:
+                try:
+                    # Handle both formats:
+                    # https://anidb.net/anime/12345
+                    # https://anidb.net/perl-bin/animedb.pl?show=anime&aid=12345
+                    if 'aid=' in source:
+                        aid_str = source.split('aid=')[-1].split('&')[0]
+                        ids["anidb_id"] = int(aid_str)
+                    else:
+                        ids["anidb_id"] = int(source.split('/')[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif 'anilist.co/anime/' in source:
                 try:
                     ids["anilist_id"] = int(source.split('/')[-1])
                 except (ValueError, IndexError):

@@ -15,6 +15,7 @@ class AnimeTitle(BaseModel):
 class AnimeMapping(BaseModel):
     """Mapping between TVDB and anime databases."""
     tvdb_id: int
+    anidb_id: Optional[int] = None
     anilist_id: Optional[int] = None
     mal_id: Optional[int] = None
     titles: AnimeTitle
@@ -83,6 +84,7 @@ class SearchResult(BaseModel):
 class MappingOverride(BaseModel):
     """User-provided mapping override via WebUI."""
     tvdb_id: int
+    anidb_id: Optional[int] = None
     anilist_id: Optional[int] = None
     mal_id: Optional[int] = None
     custom_titles: List[str] = Field(default_factory=list)

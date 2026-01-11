@@ -8,11 +8,12 @@ A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anim
 
 ## Features
 
-- **🎯 Smart Title Mapping**: Translates TVDB IDs to AniList/MAL with multiple title variants (English, Romaji, Native, Synonyms)
-- **📊 Absolute Episode Numbering**: Converts Sonarr's S##E## format to absolute episode numbers for accurate anime searches
+- **🎯 Smart Title Mapping**: Translates TVDB IDs to AniDB/AniList/MAL with multiple title variants (English, Romaji, Native, Synonyms)
+- **📊 TheXEM Integration**: Uses TheXEM.info for accurate TVDB → AniDB episode number mappings
+- **🌐 Romaji-First Searches**: Prioritizes romaji titles for better search accuracy on anime indexers
 - **🔍 Multi-Query Search**: Sends separate queries for each title variant to maximize search results
 - **🎨 Web Management Interface**: Easy-to-use WebUI for managing mappings and overrides
-- **💾 Dual Data Sources**: Uses anime-offline-database (offline) with AniList API fallback
+- **💾 Multiple Data Sources**: Uses TheXEM + anime-offline-database (offline) with AniList API fallback
 - **🔄 Smart Caching**: Reduces API calls with JSON-based caching system
 - **🐳 Docker Ready**: Includes Docker and Unraid deployment options
 - **📦 Result Deduplication**: Intelligently merges and deduplicates results from multiple queries
@@ -22,8 +23,9 @@ A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anim
 ```
 Sonarr → AnimeSonarrProxy (Torznab API) → Prowlarr → Nyaa
               ↓
-    anime-offline-database + AniList API
-    (title mapping & episode calculation)
+    TheXEM.info (episode mapping)
+    anime-offline-database (titles + IDs)
+    AniList API (fallback enrichment)
               ↓
          WebUI (mapping management)
 ```
@@ -194,9 +196,11 @@ GET /api?t=tvsearch&tvdbid=388593&season=2&ep=1&apikey=xxx
 - Falls back to AniList API if needed
 - Extracts all title variants
 
-### 3. Episode Translation
-- Converts S02E01 to absolute episode number
-- Handles season offsets and special episodes
+### 3. Episode Translation (via TheXEM)
+- Queries TheXEM.info for TVDB → AniDB episode mapping
+- Converts S02E01 to AniDB absolute episode number
+- Falls back to season_info metadata or estimation if TheXEM unavailable
+- Handles season offsets and special episodes accurately
 
 ### 4. Multi-Query Search
 Generates and executes multiple queries:
@@ -243,13 +247,15 @@ All data is stored in the `DATA_DIR` (default: `/app/data`):
 ```
 data/
 ├── anime-offline-database.json   # Downloaded anime database
-├── mappings.json                 # Cached TVDB → AniList mappings
+├── mappings.json                 # Cached TVDB → AniDB/AniList mappings
+├── thexem_cache.json            # TheXEM episode mapping cache
 └── overrides.json               # User-defined overrides
 ```
 
 ### Backup
 These files should be backed up to preserve your mappings:
 - `mappings.json`
+- `thexem_cache.json`
 - `overrides.json`
 
 ## Troubleshooting
@@ -332,6 +338,7 @@ AnimeSonarrProxy/
 │   │   ├── torznab.py          # Torznab API endpoints
 │   │   └── webui.py            # WebUI API endpoints
 │   ├── services/
+│   │   ├── thexem.py           # TheXEM.info API client
 │   │   ├── anime_db.py         # anime-offline-database handler
 │   │   ├── anilist.py          # AniList API client
 │   │   ├── mapping.py          # Mapping service
@@ -373,7 +380,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## Credits
 
-- [anime-offline-database](https://github.com/manami-project/anime-offline-database) for TVDB → AniList mappings
+- [TheXEM.info](https://thexem.info) for accurate episode number mappings between TVDB and AniDB
+- [anime-offline-database](https://github.com/manami-project/anime-offline-database) for TVDB → AniDB/AniList mappings
 - [AniList](https://anilist.co) for their excellent API
 - [Prowlarr](https://prowlarr.com) for indexer management
 - [Sonarr](https://sonarr.tv) for TV series management

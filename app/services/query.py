@@ -37,7 +37,7 @@ class QueryService:
         """
         # Get absolute episode number
         translator = get_episode_translator()
-        absolute_ep = translator.to_absolute(mapping, season, episode)
+        absolute_ep = await translator.to_absolute(mapping, season, episode)
 
         if absolute_ep is None:
             logger.error(f"Could not determine absolute episode for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d}")

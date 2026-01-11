@@ -2,6 +2,7 @@
 import logging
 from typing import Optional, Dict
 from app.models import AnimeMapping, MappingOverride
+from app.services.thexem import thexem_client
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +12,9 @@ class EpisodeTranslator:
 
     def __init__(self, mapping_service):
         self.mapping_service = mapping_service
+        self.thexem = thexem_client
 
-    def to_absolute(
+    async def to_absolute(
         self,
         mapping: AnimeMapping,
         season: int,
@@ -20,6 +22,12 @@ class EpisodeTranslator:
     ) -> Optional[int]:
         """
         Convert season/episode to absolute episode number.
+
+        Priority:
+        1. User override
+        2. TheXEM mapping (TVDB -> AniDB)
+        3. season_info metadata
+        4. Fallback calculation
 
         Args:
             mapping: The anime mapping with season info
@@ -38,6 +46,19 @@ class EpisodeTranslator:
                     absolute = override.season_episode_overrides[override_key]
                     logger.info(f"Using override: {override_key} -> {absolute}")
                     return absolute
+
+        # Try TheXEM first - most accurate source for anime
+        try:
+            xem_absolute = await self.thexem.tvdb_to_anidb_episode(
+                mapping.tvdb_id,
+                season,
+                episode
+            )
+            if xem_absolute:
+                logger.info(f"Using TheXEM mapping for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d} -> {xem_absolute}")
+                return xem_absolute
+        except Exception as e:
+            logger.warning(f"TheXEM lookup failed: {e}")
 
         # If we have season_info, use it
         if mapping.season_info:
