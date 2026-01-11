@@ -39,7 +39,7 @@ async def torznab_api(
     """
     # Validate API key
     if apikey != settings.API_KEY:
-        logger.warning(f"Invalid API key attempt: {apikey}")
+        logger.debug(f"Invalid API key attempt: {apikey}")
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     # Handle capabilities request
