@@ -141,8 +141,21 @@ class ProwlarrClient:
         publish_date_str = item.get('publishDate', '')
         pub_date = self._parse_iso_date(publish_date_str)
 
-        # Categories - Prowlarr uses category IDs
-        categories = item.get('categories', [])
+        # Categories - Prowlarr returns categories as list of objects: [{"id": 5070, "name": "TV/Anime"}]
+        categories_raw = item.get('categories', [])
+        categories = []
+
+        if isinstance(categories_raw, list):
+            for cat in categories_raw:
+                if isinstance(cat, dict):
+                    # Extract 'id' from category object
+                    cat_id = cat.get('id')
+                    if cat_id is not None:
+                        categories.append(cat_id)
+                elif isinstance(cat, int):
+                    # Already an integer
+                    categories.append(cat)
+
         if not categories:
             categories = [5070]  # Default to anime category
 
