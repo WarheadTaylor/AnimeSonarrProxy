@@ -1,4 +1,5 @@
 """Configuration management for AnimeSonarrProxy."""
+
 from pydantic_settings import BaseSettings
 from pathlib import Path
 
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
 
     # Database Settings
     DATA_DIR: Path = Path("/app/data")
-    ANIME_DB_URL: str = "https://raw.githubusercontent.com/manami-project/anime-offline-database/master/anime-offline-database-minified.json"
+    ANIME_DB_URL: str = "https://github.com/manami-project/anime-offline-database/releases/latest/download/anime-offline-database-minified.json"
     ANIME_DB_UPDATE_INTERVAL: int = 86400  # 24 hours in seconds
 
     # Cache Settings

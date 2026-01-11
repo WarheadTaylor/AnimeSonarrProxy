@@ -1,4 +1,5 @@
 """Pydantic models for data validation and serialization."""
+
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -6,6 +7,7 @@ from datetime import datetime
 
 class AnimeTitle(BaseModel):
     """Represents different title variations for an anime."""
+
     romaji: Optional[str] = None
     english: Optional[str] = None
     native: Optional[str] = None
@@ -14,19 +16,37 @@ class AnimeTitle(BaseModel):
 
 class AnimeMapping(BaseModel):
     """Mapping between TVDB and anime databases."""
+
     tvdb_id: int
     anidb_id: Optional[int] = None
     anilist_id: Optional[int] = None
     mal_id: Optional[int] = None
     titles: AnimeTitle
     total_episodes: int = 0
-    season_info: List[Dict[str, int]] = Field(default_factory=list)  # [{"season": 1, "episodes": 12}, ...]
+    season_info: List[Dict[str, int]] = Field(
+        default_factory=list
+    )  # [{"season": 1, "episodes": 12}, ...]
     last_updated: datetime = Field(default_factory=datetime.utcnow)
     user_override: bool = False  # True if manually set via WebUI
+
+    def get_search_titles(self) -> List[str]:
+        """Get all unique title variations for search queries."""
+        titles = []
+        if self.titles.romaji:
+            titles.append(self.titles.romaji)
+        if self.titles.english and self.titles.english not in titles:
+            titles.append(self.titles.english)
+        if self.titles.native and self.titles.native not in titles:
+            titles.append(self.titles.native)
+        for synonym in self.titles.synonyms:
+            if synonym and synonym not in titles:
+                titles.append(synonym)
+        return titles
 
 
 class TorznabQuery(BaseModel):
     """Torznab search query parameters."""
+
     t: str  # Query type: tvsearch, search, caps
     q: Optional[str] = None  # Search query
     tvdbid: Optional[int] = None
@@ -39,6 +59,7 @@ class TorznabQuery(BaseModel):
 
 class TorznabItem(BaseModel):
     """Torznab RSS item (search result)."""
+
     title: str
     guid: str
     link: str
@@ -55,6 +76,7 @@ class TorznabItem(BaseModel):
 
 class SearchResult(BaseModel):
     """Internal search result before Torznab formatting."""
+
     title: str
     guid: str
     link: str
@@ -65,7 +87,12 @@ class SearchResult(BaseModel):
     indexer: str = ""
     categories: List[int] = Field(default_factory=lambda: [5070])  # TV > Anime
 
-    def to_torznab_item(self, tvdbid: Optional[int] = None, season: Optional[int] = None, episode: Optional[int] = None) -> TorznabItem:
+    def to_torznab_item(
+        self,
+        tvdbid: Optional[int] = None,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+    ) -> TorznabItem:
         """Convert to Torznab format."""
         return TorznabItem(
             title=self.title,
@@ -77,16 +104,19 @@ class SearchResult(BaseModel):
             peers=self.peers,
             tvdbid=tvdbid,
             season=season,
-            episode=episode
+            episode=episode,
         )
 
 
 class MappingOverride(BaseModel):
     """User-provided mapping override via WebUI."""
+
     tvdb_id: int
     anidb_id: Optional[int] = None
     anilist_id: Optional[int] = None
     mal_id: Optional[int] = None
     custom_titles: List[str] = Field(default_factory=list)
-    season_episode_overrides: Dict[str, int] = Field(default_factory=dict)  # {"S01E01": 1, "S01E02": 2}
+    season_episode_overrides: Dict[str, int] = Field(
+        default_factory=dict
+    )  # {"S01E01": 1, "S01E02": 2}
     notes: str = ""

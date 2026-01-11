@@ -1,4 +1,5 @@
 """anime-offline-database handler for offline title mapping."""
+
 import json
 import logging
 from pathlib import Path
@@ -42,7 +43,7 @@ class AnimeOfflineDatabase:
         """Download latest anime-offline-database."""
         logger.info(f"Downloading anime-offline-database from {settings.ANIME_DB_URL}")
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.get(settings.ANIME_DB_URL)
                 response.raise_for_status()
 
@@ -50,12 +51,14 @@ class AnimeOfflineDatabase:
 
                 # Save to file
                 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
-                with open(self.db_path, 'w', encoding='utf-8') as f:
+                with open(self.db_path, "w", encoding="utf-8") as f:
                     json.dump(self.data, f, ensure_ascii=False, indent=2)
 
                 self.last_update = datetime.utcnow()
                 self._build_tvdb_index()
-                logger.info(f"Successfully updated anime-offline-database with {len(self.data.get('data', []))} entries")
+                logger.info(
+                    f"Successfully updated anime-offline-database with {len(self.data.get('data', []))} entries"
+                )
         except Exception as e:
             logger.error(f"Failed to update anime-offline-database: {e}")
             # If we have existing data, continue using it
@@ -65,11 +68,13 @@ class AnimeOfflineDatabase:
     async def _load_from_file(self):
         """Load database from local file."""
         try:
-            with open(self.db_path, 'r', encoding='utf-8') as f:
+            with open(self.db_path, "r", encoding="utf-8") as f:
                 self.data = json.load(f)
             self.last_update = datetime.fromtimestamp(self.db_path.stat().st_mtime)
             self._build_tvdb_index()
-            logger.info(f"Loaded anime-offline-database with {len(self.data.get('data', []))} entries")
+            logger.info(
+                f"Loaded anime-offline-database with {len(self.data.get('data', []))} entries"
+            )
         except Exception as e:
             logger.error(f"Failed to load anime-offline-database: {e}")
             self.data = {}
@@ -77,13 +82,13 @@ class AnimeOfflineDatabase:
     def _build_tvdb_index(self):
         """Build TVDB ID index for fast lookups."""
         self._tvdb_index = {}
-        for anime in self.data.get('data', []):
-            sources = anime.get('sources', [])
+        for anime in self.data.get("data", []):
+            sources = anime.get("sources", [])
             for source in sources:
-                if 'thetvdb.com/series/' in source:
+                if "thetvdb.com/series/" in source:
                     try:
                         # Extract TVDB ID from URL
-                        tvdb_id = int(source.split('/')[-1])
+                        tvdb_id = int(source.split("/")[-1])
                         self._tvdb_index[tvdb_id] = anime
                     except (ValueError, IndexError):
                         continue
@@ -96,27 +101,30 @@ class AnimeOfflineDatabase:
         """Extract AniDB, AniList and MAL IDs from anime entry."""
         ids = {"anidb_id": None, "anilist_id": None, "mal_id": None}
 
-        for source in anime.get('sources', []):
-            if 'anidb.net/anime/' in source or 'anidb.net/perl-bin/animedb.pl?show=anime&aid=' in source:
+        for source in anime.get("sources", []):
+            if (
+                "anidb.net/anime/" in source
+                or "anidb.net/perl-bin/animedb.pl?show=anime&aid=" in source
+            ):
                 try:
                     # Handle both formats:
                     # https://anidb.net/anime/12345
                     # https://anidb.net/perl-bin/animedb.pl?show=anime&aid=12345
-                    if 'aid=' in source:
-                        aid_str = source.split('aid=')[-1].split('&')[0]
+                    if "aid=" in source:
+                        aid_str = source.split("aid=")[-1].split("&")[0]
                         ids["anidb_id"] = int(aid_str)
                     else:
-                        ids["anidb_id"] = int(source.split('/')[-1])
+                        ids["anidb_id"] = int(source.split("/")[-1])
                 except (ValueError, IndexError):
                     pass
-            elif 'anilist.co/anime/' in source:
+            elif "anilist.co/anime/" in source:
                 try:
-                    ids["anilist_id"] = int(source.split('/')[-1])
+                    ids["anilist_id"] = int(source.split("/")[-1])
                 except (ValueError, IndexError):
                     pass
-            elif 'myanimelist.net/anime/' in source:
+            elif "myanimelist.net/anime/" in source:
                 try:
-                    ids["mal_id"] = int(source.split('/')[-1])
+                    ids["mal_id"] = int(source.split("/")[-1])
                 except (ValueError, IndexError):
                     pass
 
@@ -124,24 +132,24 @@ class AnimeOfflineDatabase:
 
     def extract_titles(self, anime: Dict) -> AnimeTitle:
         """Extract all title variations from anime entry."""
-        title = anime.get('title', '')
-        synonyms = anime.get('synonyms', [])
+        title = anime.get("title", "")
+        synonyms = anime.get("synonyms", [])
 
         return AnimeTitle(
             romaji=title,
             english=None,  # anime-offline-database doesn't separate these
             native=None,
-            synonyms=synonyms
+            synonyms=synonyms,
         )
 
     def get_all_titles(self, anime: Dict) -> List[str]:
         """Get all unique title variations as a flat list."""
         titles = set()
 
-        if anime.get('title'):
-            titles.add(anime['title'])
+        if anime.get("title"):
+            titles.add(anime["title"])
 
-        for synonym in anime.get('synonyms', []):
+        for synonym in anime.get("synonyms", []):
             titles.add(synonym)
 
         return list(titles)
@@ -164,9 +172,9 @@ class AnimeOfflineDatabase:
         matches = []
         query_words = set(query_lower.split())
 
-        for anime in self.data.get('data', []):
-            title = anime.get('title', '').lower()
-            synonyms = [s.lower() for s in anime.get('synonyms', [])]
+        for anime in self.data.get("data", []):
+            title = anime.get("title", "").lower()
+            synonyms = [s.lower() for s in anime.get("synonyms", [])]
             all_titles = [title] + synonyms
 
             best_score = 0
@@ -193,15 +201,12 @@ class AnimeOfflineDatabase:
                 best_score = max(best_score, score)
 
             if best_score > 20:
-                matches.append({
-                    'anime': anime,
-                    'score': best_score
-                })
+                matches.append({"anime": anime, "score": best_score})
 
         # Sort by score descending
-        matches.sort(key=lambda x: x['score'], reverse=True)
+        matches.sort(key=lambda x: x["score"], reverse=True)
 
-        return [m['anime'] for m in matches[:limit]]
+        return [m["anime"] for m in matches[:limit]]
 
     def get_search_titles_for_query(self, query: str) -> List[str]:
         """
