@@ -67,7 +67,9 @@ async def torznab_api(
 
         if season is None or ep is None:
             logger.warning(f"tvsearch called without season/ep for TVDB {tvdbid}")
-            return create_empty_rss()
+            # Try to search using anime titles with OVA/Special keywords
+            # This handles cases where Sonarr searches for specials without proper season/ep
+            return await handle_tvsearch_special(tvdbid, q, limit, offset)
 
         return await handle_tvsearch(tvdbid, season, ep, limit, offset)
 
@@ -142,6 +144,94 @@ async def handle_tvsearch(
     except Exception as e:
         logger.error(f"Search failed for TVDB {tvdb_id}: {e}", exc_info=True)
         return create_empty_rss()
+
+
+async def handle_tvsearch_special(
+    tvdb_id: int, query: Optional[str], limit: int, offset: int
+) -> Response:
+    """
+    Handle TV search for specials/OVAs when season/ep is not provided.
+
+    When Sonarr searches for specials, it sometimes doesn't include season/ep,
+    just the TVDB ID and possibly a query string. This function:
+    1. Gets the anime mapping for the TVDB ID
+    2. Searches with OVA/Special/Movie keywords
+    """
+    import asyncio
+
+    logger.info(f"Special search: TVDB {tvdb_id} query='{query}'")
+
+    # Get anime mapping
+    mapping = await mapping_service.get_mapping(tvdb_id)
+
+    if mapping is None:
+        logger.warning(f"No mapping found for TVDB {tvdb_id} - returning empty results")
+        return create_empty_rss()
+
+    # Get search titles from mapping
+    titles = mapping.get_search_titles()
+    if not titles:
+        logger.warning(f"No search titles for TVDB {tvdb_id}")
+        return create_empty_rss()
+
+    primary_title = titles[0]
+    logger.info(f"Searching for specials using title: {primary_title}")
+
+    # Build special queries - search with OVA/Special/Movie keywords
+    special_queries = [
+        f"{primary_title} OVA",
+        f"{primary_title} Special",
+        f"{primary_title} OAD",
+        f"{primary_title} Movie",
+    ]
+
+    # If query looks like an episode number, also try with the number
+    if query and query.strip().isdigit():
+        ep_num = query.strip()
+        special_queries.extend(
+            [
+                f"{primary_title} OVA {ep_num}",
+                f"{primary_title} Special {ep_num}",
+            ]
+        )
+
+    # Also add a bare title search as fallback
+    special_queries.append(primary_title)
+
+    logger.info(f"Special search queries: {special_queries}")
+
+    # Execute all queries in parallel
+    tasks = [prowlarr_client.search(q, limit=limit) for q in special_queries]
+    results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Combine results
+    all_results = []
+    for results in results_lists:
+        if isinstance(results, Exception):
+            logger.error(f"Query failed: {results}")
+            continue
+        all_results.extend(results)
+
+    # Deduplicate by GUID
+    seen_guids = set()
+    unique_results = []
+    for result in all_results:
+        if result.guid not in seen_guids:
+            seen_guids.add(result.guid)
+            unique_results.append(result)
+
+    # Filter for relevance - result should contain the anime title
+    relevant_results = filter_results_by_query(unique_results, primary_title)
+    logger.info(
+        f"Special search: {len(unique_results)} -> {len(relevant_results)} relevant results"
+    )
+
+    # Sort by seeders (descending) then pub_date (descending)
+    relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+    paginated_results = relevant_results[offset : offset + limit]
+
+    rss_xml = create_torznab_rss(paginated_results, tvdbid=tvdb_id)
+    return Response(content=rss_xml, media_type="application/xml")
 
 
 async def handle_search(
