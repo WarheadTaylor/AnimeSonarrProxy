@@ -11,7 +11,9 @@ from app.services.episode import get_episode_translator
 logger = logging.getLogger(__name__)
 
 # Common words to ignore when checking relevance
+# Includes generic English words and common anime title words that aren't distinctive
 STOP_WORDS = {
+    # Articles and prepositions
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
     'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
     'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
@@ -20,8 +22,21 @@ STOP_WORDS = {
     'we', 'they', 'what', 'which', 'who', 'whom', 'where', 'when', 'why',
     'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
     'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
-    'than', 'too', 'very', 'just', 'season', 'episode', 'ep', 'vol',
-    'volume', 'part', 'chapter', 's01', 's02', 's03', 's04', 's1', 's2',
+    'than', 'too', 'very', 'just',
+    # Media-related terms
+    'season', 'episode', 'ep', 'vol', 'volume', 'part', 'chapter',
+    's01', 's02', 's03', 's04', 's1', 's2', 's3', 's4',
+    'ova', 'ona', 'movie', 'film', 'special', 'specials',
+    # Common anime title words that aren't distinctive
+    'love', 'war', 'world', 'story', 'tale', 'life', 'time', 'day', 'days',
+    'night', 'girl', 'girls', 'boy', 'boys', 'man', 'men', 'woman', 'women',
+    'school', 'high', 'magic', 'battle', 'fight', 'hero', 'heroes',
+    'dragon', 'sword', 'king', 'queen', 'prince', 'princess', 'knight',
+    'angel', 'demon', 'god', 'devil', 'soul', 'spirit', 'heart', 'dream',
+    'star', 'stars', 'moon', 'sun', 'sky', 'sea', 'ocean', 'fire', 'ice',
+    'dark', 'light', 'black', 'white', 'red', 'blue', 'green', 'golden',
+    'new', 'last', 'first', 'final', 'ultimate', 'great', 'super', 'mega',
+    'zero', 'one', 'two', 'three', 'ii', 'iii', 'iv',
 }
 
 
@@ -320,15 +335,37 @@ class QueryService:
         match_count = len(matches)
 
         # Also check for partial matches (keyword is substring of result word)
-        # This handles cases like "Kaguya" matching "Kaguya-sama"
+        # This handles cases like "Kaguya" matching "Kaguyasama"
+        # But we need to be strict - the shorter word must be substantial
         for keyword in search_keywords:
             if keyword not in matches:
                 for result_word in result_words:
-                    if keyword in result_word or result_word in keyword:
+                    if self._is_valid_partial_match(keyword, result_word):
                         match_count += 1
                         break
 
         return match_count >= min_match
+
+    def _is_valid_partial_match(self, keyword: str, result_word: str) -> bool:
+        """
+        Check if keyword and result_word have a valid partial match.
+
+        To avoid false positives like "a" matching "kaguya", we require:
+        - The shorter word must be at least 4 characters
+        - The shorter word must be at least 50% the length of the longer word
+        - One must be a substring of the other
+        """
+        if len(keyword) < 4 or len(result_word) < 4:
+            return False
+
+        shorter, longer = (keyword, result_word) if len(keyword) <= len(result_word) else (result_word, keyword)
+
+        # Shorter word must be at least 50% of longer word's length
+        if len(shorter) < len(longer) * 0.5:
+            return False
+
+        # Check substring relationship
+        return shorter in longer
 
 
 def filter_results_by_query(
