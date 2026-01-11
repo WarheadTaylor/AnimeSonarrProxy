@@ -140,6 +140,7 @@ class MappingService:
 
         return AnimeMapping(
             tvdb_id=tvdb_id,
+            anidb_id=ids.get("anidb_id"),
             anilist_id=ids.get("anilist_id"),
             mal_id=ids.get("mal_id"),
             titles=titles,
@@ -166,6 +167,7 @@ class MappingService:
 
         return AnimeMapping(
             tvdb_id=override.tvdb_id,
+            anidb_id=override.anidb_id,
             anilist_id=override.anilist_id,
             mal_id=override.mal_id,
             titles=titles,
