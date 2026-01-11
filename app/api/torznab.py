@@ -46,8 +46,13 @@ async def torznab_api(
     # Handle TV search (main use case)
     elif t == "tvsearch":
         if tvdbid is None:
-            logger.warning("tvsearch called without tvdbid")
-            return create_empty_rss()
+            # Fall back to generic search if query string is provided
+            if q:
+                logger.info(f"tvsearch called without tvdbid, falling back to generic search with query: {q}")
+                return await handle_search(q, limit, offset)
+            else:
+                logger.warning("tvsearch called without tvdbid or query string")
+                return create_empty_rss()
 
         if season is None or ep is None:
             logger.warning(f"tvsearch called without season/ep for TVDB {tvdbid}")
