@@ -1,5 +1,7 @@
 """Torznab API endpoints for Sonarr integration."""
+
 import logging
+import re
 from typing import Optional
 from fastapi import APIRouter, Query, HTTPException, Response
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -51,12 +53,16 @@ async def torznab_api(
             # But pass season info for specials detection
             if q:
                 is_special = (season == 0) if season is not None else False
-                logger.info(f"tvsearch called without tvdbid, falling back to generic search with query: {q}{' [SPECIAL]' if is_special else ''}")
+                logger.info(
+                    f"tvsearch called without tvdbid, falling back to generic search with query: {q}{' [SPECIAL]' if is_special else ''}"
+                )
                 return await handle_search(q, limit, offset, is_special=is_special)
             else:
                 # Sonarr may call tvsearch without parameters during indexer testing
                 # Return recent anime results to pass the test
-                logger.info("tvsearch called without tvdbid or query string - returning default search for 'Frieren' for indexer test")
+                logger.info(
+                    "tvsearch called without tvdbid or query string - returning default search for 'Frieren' for indexer test"
+                )
                 return await handle_search("Frieren", limit, offset)
 
         if season is None or ep is None:
@@ -99,11 +105,7 @@ async def handle_caps() -> Response:
 
 
 async def handle_tvsearch(
-    tvdb_id: int,
-    season: int,
-    episode: int,
-    limit: int,
-    offset: int
+    tvdb_id: int, season: int, episode: int, limit: int, offset: int
 ) -> Response:
     """
     Handle TV search with anime title mapping.
@@ -123,17 +125,16 @@ async def handle_tvsearch(
     # Search using multiple queries
     try:
         results = await query_service.search_anime(mapping, season, episode)
-        logger.info(f"Found {len(results)} results for TVDB {tvdb_id} S{season:02d}E{episode:02d}")
+        logger.info(
+            f"Found {len(results)} results for TVDB {tvdb_id} S{season:02d}E{episode:02d}"
+        )
 
         # Apply limit and offset
-        paginated_results = results[offset:offset + limit]
+        paginated_results = results[offset : offset + limit]
 
         # Convert to Torznab RSS
         rss_xml = create_torznab_rss(
-            paginated_results,
-            tvdbid=tvdb_id,
-            season=season,
-            episode=episode
+            paginated_results, tvdbid=tvdb_id, season=season, episode=episode
         )
 
         return Response(content=rss_xml, media_type="application/xml")
@@ -144,10 +145,7 @@ async def handle_tvsearch(
 
 
 async def handle_search(
-    query: str,
-    limit: int,
-    offset: int,
-    is_special: bool = False
+    query: str, limit: int, offset: int, is_special: bool = False
 ) -> Response:
     """
     Handle generic search with smart query parsing.
@@ -158,6 +156,13 @@ async def handle_search(
     logger.info(f"Generic search: {query}")
 
     try:
+        # Detect Season 0 queries - Sonarr appends "00" for season 0 episode searches
+        # e.g., "Kaguya sama wa Kokurasetai 00" -> should search for OVA/Special/Movie
+        if not is_special and _is_season_zero_query(query):
+            is_special = True
+            query = _strip_season_zero_suffix(query)
+            logger.info(f"Detected Season 0 query - stripped to: {query} [SPECIAL]")
+
         # Parse the query to get a clean title
         search_queries = _parse_concatenated_query(query)
         base_query = search_queries[0] if search_queries else query
@@ -166,6 +171,7 @@ async def handle_search(
         if is_special:
             logger.info(f"Special detected - searching with OVA/Special/Movie keywords")
             import asyncio
+
             special_queries = [
                 f"{base_query} OVA",
                 f"{base_query} Special",
@@ -193,22 +199,26 @@ async def handle_search(
 
             # Filter out irrelevant results
             relevant_results = filter_results_by_query(unique_results, query)
-            logger.info(f"Relevance filter: {len(unique_results)} -> {len(relevant_results)} results")
+            logger.info(
+                f"Relevance filter: {len(unique_results)} -> {len(relevant_results)} results"
+            )
 
             # Sort and paginate
             relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-            paginated_results = relevant_results[offset:offset + limit]
+            paginated_results = relevant_results[offset : offset + limit]
         else:
             # Regular search - single query
             results = await prowlarr_client.search(base_query, limit=limit)
 
             # Filter out irrelevant results that don't match the search query
             relevant_results = filter_results_by_query(results, query)
-            logger.info(f"Relevance filter: {len(results)} -> {len(relevant_results)} results")
+            logger.info(
+                f"Relevance filter: {len(results)} -> {len(relevant_results)} results"
+            )
 
             # Sort by seeders (descending) then pub_date (descending, newer first)
             relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-            paginated_results = relevant_results[offset:offset + limit]
+            paginated_results = relevant_results[offset : offset + limit]
 
         rss_xml = create_torznab_rss(paginated_results)
         return Response(content=rss_xml, media_type="application/xml")
@@ -238,31 +248,56 @@ def _parse_concatenated_query(query: str) -> list[str]:
     # Try with progressively shorter prefixes of the query
     for num_words in [6, 5, 4, 3]:
         if len(words) >= num_words:
-            prefix = ' '.join(words[:num_words])
+            prefix = " ".join(words[:num_words])
             db_titles = anime_db.get_search_titles_for_query(prefix)
             if db_titles:
-                logger.info(f"Found anime in database for query prefix '{prefix}': {db_titles}")
+                logger.info(
+                    f"Found anime in database for query prefix '{prefix}': {db_titles}"
+                )
                 # Return just the primary title, not all variations
                 return [db_titles[0]]
 
     # Strategy 2: For Japanese titles with particles, extract up to the particle + a few words
-    japanese_particles = ['wa', 'no', 'ga', 'ni']
+    japanese_particles = ["wa", "no", "ga", "ni"]
     for i, word in enumerate(words[:8]):
         if word.lower() in japanese_particles:
             # Include words after the particle to complete the title
             end_idx = min(i + 4, len(words))
-            japanese_title = ' '.join(words[:end_idx])
+            japanese_title = " ".join(words[:end_idx])
             return [japanese_title]
 
     # Strategy 3: Just use the first 4-5 words as the search term
-    return [' '.join(words[:5])]
+    return [" ".join(words[:5])]
+
+
+def _is_season_zero_query(query: str) -> bool:
+    """
+    Detect if query is a Season 0 episode search.
+
+    Sonarr appends episode numbers like "00", "01", "02" for Season 0.
+    Pattern: query ends with space + two digits where first digit is 0
+    e.g., "Kaguya sama 00", "Attack on Titan 01"
+    """
+    # Match queries ending with " 0X" where X is a digit (season 0 episodes)
+    # Also match " 00" specifically
+    return bool(re.search(r"\s+0\d$", query))
+
+
+def _strip_season_zero_suffix(query: str) -> str:
+    """
+    Remove the Season 0 episode number suffix from query.
+
+    "Kaguya sama 00" -> "Kaguya sama"
+    "Attack on Titan 01" -> "Attack on Titan"
+    """
+    return re.sub(r"\s+0\d$", "", query).strip()
 
 
 def create_torznab_rss(
     results: list[SearchResult],
     tvdbid: Optional[int] = None,
     season: Optional[int] = None,
-    episode: Optional[int] = None
+    episode: Optional[int] = None,
 ) -> str:
     """Create Torznab-compliant RSS XML from search results."""
     rss = Element("rss", version="2.0")
@@ -280,7 +315,9 @@ def create_torznab_rss(
         SubElement(item, "title").text = result.title
         SubElement(item, "guid").text = result.guid
         SubElement(item, "link").text = result.link
-        SubElement(item, "pubDate").text = result.pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000")
+        SubElement(item, "pubDate").text = result.pub_date.strftime(
+            "%a, %d %b %Y %H:%M:%S +0000"
+        )
 
         # Torznab attributes
         SubElement(item, "torznab:attr", name="size", value=str(result.size))
@@ -302,7 +339,9 @@ def create_torznab_rss(
         # Enclosure (download link)
         SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
 
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(rss, encoding='unicode')
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(
+        rss, encoding="unicode"
+    )
 
 
 def create_empty_rss() -> Response:
