@@ -7,7 +7,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 from app.config import settings
 from app.models import TorznabQuery, SearchResult
 from app.services.mapping import mapping_service
-from app.services.query import query_service
+from app.services.query import query_service, filter_results_by_query
 from app.services.prowlarr import prowlarr_client
 from app.services.anime_db import anime_db
 
@@ -177,13 +177,25 @@ async def handle_search(query: str, limit: int, offset: int) -> Response:
                     seen_guids.add(result.guid)
                     unique_results.append(result)
 
-            # Sort by seeders
-            unique_results.sort(key=lambda x: x.seeders, reverse=True)
-            paginated_results = unique_results[offset:offset + limit]
+            # Filter out irrelevant results that don't match the search query
+            relevant_results = filter_results_by_query(unique_results, query)
+            logger.info(f"Relevance filter: {len(unique_results)} -> {len(relevant_results)} results")
+
+            # Sort by seeders (descending) then pub_date (descending, newer first)
+            relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+            paginated_results = relevant_results[offset:offset + limit]
         else:
-            # Single query - use as is
-            results = await prowlarr_client.search(search_queries[0] if search_queries else query, limit=limit)
-            paginated_results = results[offset:offset + limit]
+            # Single query - search and sort results
+            search_query = search_queries[0] if search_queries else query
+            results = await prowlarr_client.search(search_query, limit=limit)
+
+            # Filter out irrelevant results that don't match the search query
+            relevant_results = filter_results_by_query(results, query)
+            logger.info(f"Relevance filter: {len(results)} -> {len(relevant_results)} results")
+
+            # Sort by seeders (descending) then pub_date (descending, newer first)
+            relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+            paginated_results = relevant_results[offset:offset + limit]
 
         rss_xml = create_torznab_rss(paginated_results)
         return Response(content=rss_xml, media_type="application/xml")
