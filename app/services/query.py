@@ -79,9 +79,12 @@ class QueryService:
             logger.error(f"No titles found for TVDB {mapping.tvdb_id}")
             return []
 
+        # Detect if this is a special (season 0)
+        is_special = (season == 0)
+
         # Build queries for each title + episode combination
-        queries = self._build_queries(titles, absolute_ep)
-        logger.info(f"Searching with {len(queries)} queries for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d} (abs: {absolute_ep})")
+        queries = self._build_queries(titles, absolute_ep, is_special=is_special)
+        logger.info(f"Searching with {len(queries)} queries for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d} (abs: {absolute_ep}){' [SPECIAL]' if is_special else ''}")
 
         # Execute all queries in parallel
         all_results = await self._execute_queries(queries)
@@ -120,21 +123,44 @@ class QueryService:
 
         return titles
 
-    def _build_queries(self, titles: List[str], absolute_episode: int) -> List[str]:
+    def _build_queries(
+        self,
+        titles: List[str],
+        absolute_episode: int,
+        is_special: bool = False
+    ) -> List[str]:
         """
         Build search query strings.
 
-        Format: "{title} {episode}"
-        Example: "Frieren 28"
+        Format: "{title} {episode}" or "{title} OVA/Special" for specials
+        Example: "Frieren 28" or "Kaguya-sama OVA"
         """
         queries = []
 
         for title in titles:
-            # Primary format: "Title Episode"
-            query = f"{title} {absolute_episode}"
-            queries.append(query)
+            if is_special:
+                # For specials (season 0), search with OVA/Special/Movie keywords
+                # Episode number might not match, so also search without it
+                queries.append(f"{title} OVA")
+                queries.append(f"{title} Special")
+                queries.append(f"{title} OVA {absolute_episode}")
+                queries.append(f"{title} Special {absolute_episode}")
+                # Some specials are movies
+                queries.append(f"{title} Movie")
+            else:
+                # Regular episode: "Title Episode"
+                query = f"{title} {absolute_episode}"
+                queries.append(query)
 
-        return queries
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_queries = []
+        for q in queries:
+            if q not in seen:
+                seen.add(q)
+                unique_queries.append(q)
+
+        return unique_queries
 
     async def _execute_queries(self, queries: List[str]) -> List[SearchResult]:
         """Execute multiple search queries in parallel."""
