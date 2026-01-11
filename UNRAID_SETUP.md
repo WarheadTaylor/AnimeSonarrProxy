@@ -36,13 +36,16 @@ This guide will walk you through setting up AnimeSonarrProxy on Unraid using Doc
          - "8000:8000"
        volumes:
          - /mnt/user/appdata/animesonarrproxy/data:/app/data
-       environment:
-         - API_KEY=your-secret-api-key-here
-         - HOST=0.0.0.0
-         - PORT=8000
-         - PROWLARR_URL=http://prowlarr:9696  # or http://192.168.x.x:9696
-         - PROWLARR_API_KEY=your_prowlarr_api_key
-         - LOG_LEVEL=INFO
+        environment:
+          - API_KEY=your-secret-api-key-here
+          - HOST=0.0.0.0
+          - PORT=8000
+          - PROWLARR_URL=http://prowlarr:9696  # or http://192.168.x.x:9696
+          - PROWLARR_API_KEY=your_prowlarr_api_key
+          # Optional: Sonarr integration for accurate episode metadata
+          - SONARR_URL=http://sonarr:8989  # or http://192.168.x.x:8989
+          - SONARR_API_KEY=your_sonarr_api_key
+          - LOG_LEVEL=INFO
        networks:
          - arr-network
 
@@ -95,7 +98,11 @@ This guide will walk you through setting up AnimeSonarrProxy on Unraid using Doc
    | Port | `PORT` | `8000` |
    | Prowlarr URL | `PROWLARR_URL` | `http://192.168.x.x:9696` |
    | Prowlarr API Key | `PROWLARR_API_KEY` | `your_prowlarr_api_key` |
+   | Sonarr URL (Optional) | `SONARR_URL` | `http://192.168.x.x:8989` |
+   | Sonarr API Key (Optional) | `SONARR_API_KEY` | `your_sonarr_api_key` |
    | Log Level | `LOG_LEVEL` | `INFO` |
+
+   > **Note:** Sonarr integration is optional but recommended. It allows the proxy to query Sonarr for accurate episode metadata, which helps distinguish between regular episodes and specials.
 
 6. **Apply and Start**
 

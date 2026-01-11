@@ -10,6 +10,7 @@ A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anim
 
 - **🎯 Smart Title Mapping**: Translates TVDB IDs to AniDB/AniList/MAL with multiple title variants (English, Romaji, Native, Synonyms)
 - **📊 TheXEM Integration**: Uses TheXEM.info for accurate TVDB → AniDB episode number mappings
+- **🔗 Sonarr API Integration**: Optional direct Sonarr integration for accurate episode metadata lookup (distinguishes regular episodes from specials)
 - **🌐 Romaji-First Searches**: Prioritizes romaji titles for better search accuracy on anime indexers
 - **🔍 Multi-Query Search**: Sends separate queries for each title variant to maximize search results
 - **🎨 Web Management Interface**: Easy-to-use WebUI for managing mappings and overrides
@@ -22,12 +23,14 @@ A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anim
 
 ```
 Sonarr → AnimeSonarrProxy (Torznab API) → Prowlarr → Nyaa
-              ↓
+   ↑           ↓
+   └───────────┤ (optional episode metadata lookup)
+               ↓
     TheXEM.info (episode mapping)
     anime-offline-database (titles + IDs)
     AniList API (fallback enrichment)
-              ↓
-         WebUI (mapping management)
+               ↓
+          WebUI (mapping management)
 ```
 
 ## Quick Start
@@ -114,6 +117,8 @@ Edit `.env` file or set environment variables:
 |----------|-------------|---------|
 | `HOST` | Host to bind to | `0.0.0.0` |
 | `PORT` | Port to listen on | `8000` |
+| `SONARR_URL` | Sonarr URL for episode metadata lookup | *(not set)* |
+| `SONARR_API_KEY` | Sonarr API key | *(not set)* |
 | `DATA_DIR` | Directory for data storage | `/app/data` |
 | `ANIME_DB_UPDATE_INTERVAL` | Seconds between database updates | `86400` (24h) |
 | `CACHE_TTL` | Cache TTL in seconds | `3600` (1h) |
@@ -121,6 +126,14 @@ Edit `.env` file or set environment variables:
 | `MAX_RESULTS_PER_QUERY` | Max results per query | `100` |
 | `ENABLE_DEDUPLICATION` | Enable result deduplication | `true` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+
+### Sonarr Integration (Recommended)
+
+When `SONARR_URL` and `SONARR_API_KEY` are configured, the proxy can query Sonarr directly to determine accurate episode metadata. This helps distinguish between:
+- **Regular episodes**: Searched as "Title 39" (absolute episode number)
+- **Specials/OVAs**: Searched with "Title OVA", "Title Special", etc.
+
+Without this integration, the proxy defaults to treating numeric queries as absolute episode numbers (which works for most anime).
 
 ## Sonarr Setup
 
@@ -341,6 +354,7 @@ AnimeSonarrProxy/
 │   │   ├── thexem.py           # TheXEM.info API client
 │   │   ├── anime_db.py         # anime-offline-database handler
 │   │   ├── anilist.py          # AniList API client
+│   │   ├── sonarr.py           # Sonarr API client (episode metadata)
 │   │   ├── mapping.py          # Mapping service
 │   │   ├── episode.py          # Episode translation
 │   │   ├── prowlarr.py         # Prowlarr client

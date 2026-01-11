@@ -1,4 +1,5 @@
 """Main FastAPI application for AnimeSonarrProxy."""
+
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -11,13 +12,14 @@ from app.config import settings
 from app.api import torznab, webui
 from app.services.anime_db import anime_db
 from app.services.mapping import mapping_service
+from app.services.sonarr import sonarr_client
 from app.services import episode
 
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,18 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing episode translator...")
     episode.episode_translator = episode.EpisodeTranslator(mapping_service)
 
-    logger.info(f"AnimeSonarrProxy started successfully on {settings.HOST}:{settings.PORT}")
+    # Initialize Sonarr client (optional - for episode metadata lookup)
+    if settings.SONARR_URL and settings.SONARR_API_KEY:
+        logger.info("Initializing Sonarr client...")
+        sonarr_client.configure(settings.SONARR_URL, settings.SONARR_API_KEY)
+    else:
+        logger.info(
+            "Sonarr integration not configured (SONARR_URL/SONARR_API_KEY not set)"
+        )
+
+    logger.info(
+        f"AnimeSonarrProxy started successfully on {settings.HOST}:{settings.PORT}"
+    )
     logger.info(f"Torznab API: http://{settings.HOST}:{settings.PORT}/api")
     logger.info(f"WebUI: http://{settings.HOST}:{settings.PORT}/")
 
@@ -56,7 +69,7 @@ app = FastAPI(
     title="AnimeSonarrProxy",
     description="Torznab-compatible proxy for anime title mapping between Sonarr and Prowlarr",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -84,5 +97,5 @@ if __name__ == "__main__":
         host=settings.HOST,
         port=settings.PORT,
         reload=False,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

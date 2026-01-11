@@ -11,6 +11,7 @@ from app.models import TorznabQuery, SearchResult
 from app.services.mapping import mapping_service
 from app.services.query import query_service, filter_results_by_query
 from app.services.prowlarr import prowlarr_client
+from app.services.sonarr import sonarr_client
 from app.services.anime_db import anime_db
 
 logger = logging.getLogger(__name__)
@@ -150,18 +151,19 @@ async def handle_tvsearch_special(
     tvdb_id: int, query: Optional[str], limit: int, offset: int
 ) -> Response:
     """
-    Handle TV search for specials/OVAs when season/ep is not provided.
+    Handle TV search when season/ep is not provided.
 
-    When Sonarr searches for specials, it sometimes doesn't include season/ep,
-    just the TVDB ID and possibly a query string. This function:
-    1. Gets the anime mapping for the TVDB ID
-    2. Searches with OVA/Special/Movie keywords
+    This can happen in two scenarios:
+    1. Sonarr searching for specials (OVAs, movies) - query might be "01", "1", etc.
+    2. Sonarr searching with absolute episode number - query is the episode number
+
+    We detect which case it is using Sonarr API (if configured) and search accordingly.
     """
     import asyncio
 
-    logger.info(f"Special search: TVDB {tvdb_id} query='{query}'")
+    logger.info(f"TV search without season/ep: TVDB {tvdb_id} query='{query}'")
 
-    # Get anime mapping
+    # Get anime mapping first (needed for both cases)
     mapping = await mapping_service.get_mapping(tvdb_id)
 
     if mapping is None:
@@ -175,7 +177,137 @@ async def handle_tvsearch_special(
         return create_empty_rss()
 
     primary_title = titles[0]
+
+    # Check if query looks like an absolute episode number
+    is_potential_absolute_ep = (
+        query and query.strip().isdigit() and int(query.strip()) > 0
+    )
+
+    if is_potential_absolute_ep:
+        absolute_ep = int(query.strip())
+
+        # Try Sonarr lookup if configured
+        if sonarr_client.is_configured():
+            episode_info = await sonarr_client.get_episode_by_absolute_number(
+                tvdb_id, absolute_ep
+            )
+
+            if episode_info:
+                if episode_info.is_special:
+                    # Confirmed special - use OVA/Special search
+                    logger.info(
+                        f"Sonarr confirms episode {absolute_ep} is a special "
+                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
+                    )
+                    return await _search_for_special(
+                        tvdb_id, titles, absolute_ep, limit, offset
+                    )
+                else:
+                    # Regular episode - search with title + episode number
+                    logger.info(
+                        f"Sonarr confirms episode {absolute_ep} is regular "
+                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
+                    )
+                    return await _search_for_absolute_episode(
+                        tvdb_id, titles, absolute_ep, limit, offset
+                    )
+            else:
+                # Episode not found in Sonarr - might be a future episode or error
+                # Default to absolute episode search (most common case for anime)
+                logger.info(
+                    f"Episode {absolute_ep} not found in Sonarr, "
+                    f"treating as absolute episode search"
+                )
+                return await _search_for_absolute_episode(
+                    tvdb_id, titles, absolute_ep, limit, offset
+                )
+        else:
+            # Sonarr not configured - default to absolute episode search for numeric queries
+            # This is the most likely scenario for anime
+            logger.info(
+                f"Sonarr not configured, treating query '{query}' as absolute episode {absolute_ep}"
+            )
+            return await _search_for_absolute_episode(
+                tvdb_id, titles, absolute_ep, limit, offset
+            )
+
+    # Non-numeric query or no query - treat as special search
     logger.info(f"Searching for specials using title: {primary_title}")
+    return await _search_for_special(tvdb_id, titles, None, limit, offset)
+
+
+async def _search_for_absolute_episode(
+    tvdb_id: int,
+    titles: list[str],
+    absolute_ep: int,
+    limit: int,
+    offset: int,
+) -> Response:
+    """
+    Search for a regular episode using absolute episode number.
+
+    Builds queries like "Title 39" for each title variant.
+    """
+    import asyncio
+
+    logger.info(f"Absolute episode search: TVDB {tvdb_id} episode {absolute_ep}")
+
+    # Build queries for each title variant (limit to prevent too many requests)
+    episode_queries = [f"{title} {absolute_ep}" for title in titles[:4]]
+
+    logger.info(f"Absolute episode search queries: {episode_queries}")
+
+    # Execute all queries in parallel
+    tasks = [prowlarr_client.search(q, limit=limit) for q in episode_queries]
+    results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Combine results
+    all_results = []
+    for results in results_lists:
+        if isinstance(results, Exception):
+            logger.error(f"Query failed: {results}")
+            continue
+        all_results.extend(results)
+
+    # Deduplicate by GUID
+    seen_guids = set()
+    unique_results = []
+    for result in all_results:
+        if result.guid not in seen_guids:
+            seen_guids.add(result.guid)
+            unique_results.append(result)
+
+    # Filter for relevance
+    primary_title = titles[0]
+    relevant_results = filter_results_by_query(unique_results, primary_title)
+    logger.info(
+        f"Absolute episode search: {len(unique_results)} -> {len(relevant_results)} relevant results"
+    )
+
+    # Sort by seeders (descending) then pub_date (descending)
+    relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+    paginated_results = relevant_results[offset : offset + limit]
+
+    rss_xml = create_torznab_rss(paginated_results, tvdbid=tvdb_id)
+    return Response(content=rss_xml, media_type="application/xml")
+
+
+async def _search_for_special(
+    tvdb_id: int,
+    titles: list[str],
+    episode_num: Optional[int],
+    limit: int,
+    offset: int,
+) -> Response:
+    """
+    Search for specials/OVAs/movies.
+
+    Builds queries with OVA/Special/Movie keywords.
+    """
+    import asyncio
+
+    primary_title = titles[0]
+    logger.info(f"Special search: TVDB {tvdb_id} title='{primary_title}'")
 
     # Build special queries - search with OVA/Special/Movie keywords
     special_queries = [
@@ -185,13 +317,12 @@ async def handle_tvsearch_special(
         f"{primary_title} Movie",
     ]
 
-    # If query looks like an episode number, also try with the number
-    if query and query.strip().isdigit():
-        ep_num = query.strip()
+    # If we have an episode number, also try with the number
+    if episode_num is not None:
         special_queries.extend(
             [
-                f"{primary_title} OVA {ep_num}",
-                f"{primary_title} Special {ep_num}",
+                f"{primary_title} OVA {episode_num}",
+                f"{primary_title} Special {episode_num}",
             ]
         )
 

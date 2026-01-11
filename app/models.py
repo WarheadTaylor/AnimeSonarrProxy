@@ -120,3 +120,31 @@ class MappingOverride(BaseModel):
         default_factory=dict
     )  # {"S01E01": 1, "S01E02": 2}
     notes: str = ""
+
+
+class EpisodeInfo(BaseModel):
+    """Episode information from Sonarr API."""
+
+    series_id: int
+    series_title: str
+    season_number: int
+    episode_number: int
+    absolute_episode_number: Optional[int] = None
+    title: Optional[str] = None
+    is_special: bool = False  # True if seasonNumber == 0
+
+    @classmethod
+    def from_sonarr_response(
+        cls, episode: Dict[str, Any], series: Dict[str, Any]
+    ) -> "EpisodeInfo":
+        """Create EpisodeInfo from Sonarr API response."""
+        season_num = episode.get("seasonNumber", 0)
+        return cls(
+            series_id=episode.get("seriesId", 0),
+            series_title=series.get("title", ""),
+            season_number=season_num,
+            episode_number=episode.get("episodeNumber", 0),
+            absolute_episode_number=episode.get("absoluteEpisodeNumber"),
+            title=episode.get("title"),
+            is_special=(season_num == 0),
+        )

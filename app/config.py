@@ -1,5 +1,6 @@
 """Configuration management for AnimeSonarrProxy."""
 
+from typing import Optional
 from pydantic_settings import BaseSettings
 from pathlib import Path
 
@@ -15,6 +16,10 @@ class Settings(BaseSettings):
     # Prowlarr Settings
     PROWLARR_URL: str = "http://localhost:9696"
     PROWLARR_API_KEY: str = ""
+
+    # Sonarr Settings (optional - for episode metadata lookup)
+    SONARR_URL: Optional[str] = None  # e.g., "http://localhost:8989"
+    SONARR_API_KEY: Optional[str] = None
 
     # AniList API Settings
     ANILIST_API_URL: str = "https://graphql.anilist.co"
