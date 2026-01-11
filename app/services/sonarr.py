@@ -271,9 +271,11 @@ class SonarrClient:
             )
             return None
 
+        candidate_names = [
+            f"S{ep.get('seasonNumber')}E{ep.get('episodeNumber')}" for ep in candidates
+        ]
         logger.debug(
-            f"Found {len(candidates)} episodes with episodeNumber={episode_num}: "
-            f"{[f'S{ep.get("seasonNumber")}E{ep.get("episodeNumber")}' for ep in candidates]}"
+            f"Found {len(candidates)} episodes with episodeNumber={episode_num}: {candidate_names}"
         )
 
         # Filter to monitored episodes without files (wanted/missing)
