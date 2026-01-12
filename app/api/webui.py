@@ -1,4 +1,5 @@
 """WebUI API endpoints for managing anime mappings."""
+
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
@@ -36,7 +37,9 @@ async def get_mapping(tvdb_id: int) -> Optional[AnimeMapping]:
     """Get a specific mapping by TVDB ID."""
     mapping = await mapping_service.get_mapping(tvdb_id)
     if mapping is None:
-        raise HTTPException(status_code=404, detail=f"No mapping found for TVDB {tvdb_id}")
+        raise HTTPException(
+            status_code=404, detail=f"No mapping found for TVDB {tvdb_id}"
+        )
     return mapping
 
 
@@ -50,12 +53,22 @@ async def create_override(override: MappingOverride):
         anilist_data = await anilist_client.get_by_anilist_id(override.anilist_id)
         if not anilist_data:
             raise HTTPException(
-                status_code=400,
-                detail=f"Invalid AniList ID: {override.anilist_id}"
+                status_code=400, detail=f"Invalid AniList ID: {override.anilist_id}"
             )
 
     await mapping_service.save_override(override)
-    return {"status": "success", "message": f"Override saved for TVDB {override.tvdb_id}"}
+    return {
+        "status": "success",
+        "message": f"Override saved for TVDB {override.tvdb_id}",
+    }
+
+
+@router.get("/api/mappings/override/{tvdb_id}")
+async def get_override(tvdb_id: int) -> MappingOverride:
+    """Get a specific override by TVDB ID for editing."""
+    if tvdb_id in mapping_service.overrides:
+        return mapping_service.overrides[tvdb_id]
+    raise HTTPException(status_code=404, detail=f"No override found for TVDB {tvdb_id}")
 
 
 @router.delete("/api/mappings/override/{tvdb_id}")
@@ -64,12 +77,16 @@ async def delete_override(tvdb_id: int):
     if tvdb_id in mapping_service.overrides:
         del mapping_service.overrides[tvdb_id]
         # Re-save overrides file
-        await mapping_service.save_override(MappingOverride(tvdb_id=0))  # Dummy to trigger save
+        await mapping_service.save_override(
+            MappingOverride(tvdb_id=0)
+        )  # Dummy to trigger save
         if 0 in mapping_service.overrides:
             del mapping_service.overrides[0]
         return {"status": "success", "message": f"Override deleted for TVDB {tvdb_id}"}
     else:
-        raise HTTPException(status_code=404, detail=f"No override found for TVDB {tvdb_id}")
+        raise HTTPException(
+            status_code=404, detail=f"No override found for TVDB {tvdb_id}"
+        )
 
 
 @router.get("/api/search/anilist")
@@ -80,7 +97,7 @@ async def search_anilist(query: str):
     logger.info(f"AniList search: {query}")
     return {
         "results": [],
-        "message": "AniList search not yet implemented - use AniList ID directly"
+        "message": "AniList search not yet implemented - use AniList ID directly",
     }
 
 
@@ -90,7 +107,9 @@ async def get_stats():
     return {
         "total_mappings": len(mapping_service.cache),
         "total_overrides": len(mapping_service.overrides),
-        "anime_db_last_update": anime_db.last_update.isoformat() if anime_db.last_update else None,
+        "anime_db_last_update": anime_db.last_update.isoformat()
+        if anime_db.last_update
+        else None,
     }
 
 

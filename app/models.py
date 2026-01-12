@@ -120,6 +120,9 @@ class MappingOverride(BaseModel):
     season_episode_overrides: Dict[str, int] = Field(
         default_factory=dict
     )  # {"S01E01": 1, "S01E02": 2}
+    season_ranges: List[Dict[str, int]] = Field(
+        default_factory=list
+    )  # [{"season": 1, "episodes": 12, "start_absolute": 1}]
     notes: str = ""
 
 

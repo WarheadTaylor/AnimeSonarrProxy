@@ -60,7 +60,65 @@ Frieren
                     <textarea id="notes" rows="2" placeholder="Additional notes about this mapping..."></textarea>
                 </div>
 
-                <button type="submit" class="btn-primary">Save Override</button>
+                <!-- Episode Mapping Section -->
+                <div class="episode-section">
+                    <h3>Episode Mappings</h3>
+                    <p class="section-description">Map TVDB season/episode numbers to absolute episode numbers when TheXEM doesn't have the data.</p>
+
+                    <!-- Add Season Range Form -->
+                    <div class="season-range-form">
+                        <div class="form-row">
+                            <div class="form-field">
+                                <label for="season-num">Season</label>
+                                <input type="number" id="season-num" min="0" value="1" placeholder="1">
+                            </div>
+                            <div class="form-field">
+                                <label for="episode-count">Episodes</label>
+                                <input type="number" id="episode-count" min="1" value="12" placeholder="12">
+                            </div>
+                            <div class="form-field">
+                                <label for="start-absolute">Start Absolute</label>
+                                <input type="number" id="start-absolute" min="1" value="1" placeholder="1">
+                            </div>
+                            <div class="form-field form-field-button">
+                                <button type="button" class="btn-secondary" onclick="addSeasonRange()">+ Add Season</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Episode Mappings Table -->
+                    <div class="episode-table-container">
+                        <table class="episode-table" id="episode-table">
+                            <thead>
+                                <tr>
+                                    <th>Season</th>
+                                    <th>Episode</th>
+                                    <th>Absolute</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="episode-table-body">
+                                <!-- Dynamically populated -->
+                            </tbody>
+                            <tfoot>
+                                <tr class="add-episode-row">
+                                    <td><input type="number" id="add-season" min="0" value="1" placeholder="S"></td>
+                                    <td><input type="number" id="add-episode" min="1" value="1" placeholder="E"></td>
+                                    <td><input type="number" id="add-absolute" min="1" value="1" placeholder="Abs"></td>
+                                    <td><button type="button" class="btn-small add" onclick="addSingleEpisode()">+</button></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        <p class="episode-count-info">
+                            <span id="episode-mapping-count">0</span> episode mapping(s)
+                        </p>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary" id="submit-btn">Save Override</button>
+                    <button type="button" class="btn-secondary" id="cancel-btn" onclick="cancelEdit()" style="display: none;">Cancel Edit</button>
+                </div>
             </form>
         </div>
 

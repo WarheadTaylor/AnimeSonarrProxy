@@ -1,11 +1,15 @@
 // Global state
 let allMappings = [];
+let currentEpisodeMappings = {};  // {"S01E01": 1, "S01E02": 2, ...}
+let currentSeasonRanges = [];     // [{season: 1, episodes: 12, start_absolute: 1}]
+let editingTvdbId = null;         // null = create mode, number = edit mode
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     loadStats();
     loadMappings();
     setupEventListeners();
+    renderEpisodeMappings();
 });
 
 function setupEventListeners() {
@@ -56,6 +60,11 @@ function renderMappings(mappings) {
 
     const html = mappings.map(mapping => createMappingCard(mapping)).join('');
     container.innerHTML = html;
+
+    // Load episode override info for user overrides
+    mappings.filter(m => m.user_override).forEach(mapping => {
+        loadEpisodeOverrideInfo(mapping.tvdb_id);
+    });
 }
 
 function createMappingCard(mapping) {
@@ -64,18 +73,31 @@ function createMappingCard(mapping) {
         ? '<span class="badge">USER OVERRIDE</span>'
         : '';
 
+    // Check if this override has episode mappings
+    let episodeOverrideInfo = '';
+    if (mapping.user_override) {
+        // We'll need to fetch the override details to show episode count
+        // For now, just indicate it's an override
+        episodeOverrideInfo = `<div class="episode-override-info" id="episode-info-${mapping.tvdb_id}">Loading episode mappings...</div>`;
+    }
+
     return `
-        <div class="mapping-card">
+        <div class="mapping-card" data-tvdb-id="${mapping.tvdb_id}">
             <div class="mapping-header">
                 <div class="mapping-title">
                     <h3>${escapeHtml(titles[0] || 'Unknown')}</h3>
                     ${overrideBadge}
                 </div>
-                ${mapping.user_override ? `
-                    <button class="btn-danger" onclick="deleteOverride(${mapping.tvdb_id})">
-                        Delete Override
+                <div class="mapping-actions">
+                    <button class="btn-edit" onclick="editMapping(${mapping.tvdb_id})">
+                        Edit
                     </button>
-                ` : ''}
+                    ${mapping.user_override ? `
+                        <button class="btn-danger" onclick="deleteOverride(${mapping.tvdb_id})">
+                            Delete
+                        </button>
+                    ` : ''}
+                </div>
             </div>
 
             <div class="mapping-ids">
@@ -91,6 +113,8 @@ function createMappingCard(mapping) {
                     ${titles.map(title => `<span class="title-tag">${escapeHtml(title)}</span>`).join('')}
                 </div>
             </div>
+
+            ${episodeOverrideInfo}
         </div>
     `;
 }
@@ -149,7 +173,8 @@ async function handleOverrideSubmit(event) {
         mal_id: malId ? parseInt(malId) : null,
         custom_titles: customTitles,
         notes: notes,
-        season_episode_overrides: {}
+        season_episode_overrides: currentEpisodeMappings,
+        season_ranges: currentSeasonRanges
     };
 
     try {
@@ -166,10 +191,11 @@ async function handleOverrideSubmit(event) {
             throw new Error(error.detail || 'Failed to save override');
         }
 
-        showNotification('Override saved successfully!', 'success');
+        const action = editingTvdbId ? 'updated' : 'saved';
+        showNotification(`Override ${action} successfully!`, 'success');
 
-        // Reset form
-        document.getElementById('override-form').reset();
+        // Reset form and state
+        clearForm();
 
         // Reload data
         await loadStats();
@@ -239,4 +265,259 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ==========================================
+// Episode Mapping Functions
+// ==========================================
+
+function renderEpisodeMappings() {
+    const tbody = document.getElementById('episode-table-body');
+    const countEl = document.getElementById('episode-mapping-count');
+
+    const entries = Object.entries(currentEpisodeMappings).sort((a, b) => {
+        // Sort by season then episode
+        const parseKey = (key) => {
+            const match = key.match(/S(\d+)E(\d+)/);
+            return match ? { s: parseInt(match[1]), e: parseInt(match[2]) } : { s: 0, e: 0 };
+        };
+        const aKey = parseKey(a[0]);
+        const bKey = parseKey(b[0]);
+        if (aKey.s !== bKey.s) return aKey.s - bKey.s;
+        return aKey.e - bKey.e;
+    });
+
+    if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color: #888; font-style: italic;">No episode mappings yet. Add a season range or individual episodes above.</td></tr>';
+    } else {
+        tbody.innerHTML = entries.map(([key, absolute]) => {
+            const match = key.match(/S(\d+)E(\d+)/);
+            const season = match ? match[1] : '?';
+            const episode = match ? match[2] : '?';
+            return `
+                <tr>
+                    <td>${season}</td>
+                    <td>${episode}</td>
+                    <td>${absolute}</td>
+                    <td><button type="button" class="btn-small remove" onclick="removeEpisodeMapping('${key}')">&times;</button></td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    countEl.textContent = entries.length;
+}
+
+function addSeasonRange() {
+    const seasonNum = parseInt(document.getElementById('season-num').value);
+    const episodeCount = parseInt(document.getElementById('episode-count').value);
+    const startAbsolute = parseInt(document.getElementById('start-absolute').value);
+
+    if (isNaN(seasonNum) || isNaN(episodeCount) || isNaN(startAbsolute)) {
+        showNotification('Please fill in all season range fields', 'error');
+        return;
+    }
+
+    if (episodeCount < 1) {
+        showNotification('Episode count must be at least 1', 'error');
+        return;
+    }
+
+    if (startAbsolute < 1) {
+        showNotification('Start absolute must be at least 1', 'error');
+        return;
+    }
+
+    // Check for conflicts
+    const conflicts = [];
+    for (let i = 0; i < episodeCount; i++) {
+        const key = `S${String(seasonNum).padStart(2, '0')}E${String(i + 1).padStart(2, '0')}`;
+        const newAbsolute = startAbsolute + i;
+        if (currentEpisodeMappings[key] !== undefined && currentEpisodeMappings[key] !== newAbsolute) {
+            conflicts.push({
+                key: key,
+                oldValue: currentEpisodeMappings[key],
+                newValue: newAbsolute
+            });
+        }
+    }
+
+    if (conflicts.length > 0) {
+        const conflictList = conflicts.slice(0, 5).map(c =>
+            `${c.key}: ${c.oldValue} -> ${c.newValue}`
+        ).join('\n');
+        const moreText = conflicts.length > 5 ? `\n...and ${conflicts.length - 5} more` : '';
+
+        if (!confirm(`This will overwrite ${conflicts.length} existing mapping(s):\n\n${conflictList}${moreText}\n\nContinue anyway?`)) {
+            return;
+        }
+    }
+
+    // Add the mappings
+    for (let i = 0; i < episodeCount; i++) {
+        const key = `S${String(seasonNum).padStart(2, '0')}E${String(i + 1).padStart(2, '0')}`;
+        currentEpisodeMappings[key] = startAbsolute + i;
+    }
+
+    // Track the season range
+    currentSeasonRanges.push({
+        season: seasonNum,
+        episodes: episodeCount,
+        start_absolute: startAbsolute
+    });
+
+    renderEpisodeMappings();
+    showNotification(`Added ${episodeCount} episodes for Season ${seasonNum}`, 'success');
+
+    // Update start absolute for next season (convenience)
+    document.getElementById('season-num').value = seasonNum + 1;
+    document.getElementById('start-absolute').value = startAbsolute + episodeCount;
+}
+
+function addSingleEpisode() {
+    const season = parseInt(document.getElementById('add-season').value);
+    const episode = parseInt(document.getElementById('add-episode').value);
+    const absolute = parseInt(document.getElementById('add-absolute').value);
+
+    if (isNaN(season) || isNaN(episode) || isNaN(absolute)) {
+        showNotification('Please fill in all episode fields', 'error');
+        return;
+    }
+
+    const key = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+
+    if (currentEpisodeMappings[key] !== undefined && currentEpisodeMappings[key] !== absolute) {
+        if (!confirm(`${key} already maps to ${currentEpisodeMappings[key]}. Overwrite with ${absolute}?`)) {
+            return;
+        }
+    }
+
+    currentEpisodeMappings[key] = absolute;
+    renderEpisodeMappings();
+
+    // Increment episode for next entry (convenience)
+    document.getElementById('add-episode').value = episode + 1;
+    document.getElementById('add-absolute').value = absolute + 1;
+}
+
+function removeEpisodeMapping(key) {
+    delete currentEpisodeMappings[key];
+    renderEpisodeMappings();
+}
+
+// ==========================================
+// Edit Mode Functions
+// ==========================================
+
+async function editMapping(tvdbId) {
+    try {
+        // Try to fetch existing override
+        let override = null;
+        try {
+            const response = await fetch(`/api/mappings/override/${tvdbId}`);
+            if (response.ok) {
+                override = await response.json();
+            }
+        } catch (e) {
+            // No existing override, that's fine
+        }
+
+        // Set edit mode
+        editingTvdbId = tvdbId;
+
+        // Populate form
+        document.getElementById('tvdb-id').value = tvdbId;
+        document.getElementById('tvdb-id').readOnly = true;
+
+        if (override) {
+            document.getElementById('anilist-id').value = override.anilist_id || '';
+            document.getElementById('mal-id').value = override.mal_id || '';
+            document.getElementById('custom-titles').value = (override.custom_titles || []).join('\n');
+            document.getElementById('notes').value = override.notes || '';
+
+            // Load episode mappings
+            currentEpisodeMappings = override.season_episode_overrides || {};
+            currentSeasonRanges = override.season_ranges || [];
+        } else {
+            // No override exists yet, just populate TVDB ID
+            document.getElementById('anilist-id').value = '';
+            document.getElementById('mal-id').value = '';
+            document.getElementById('custom-titles').value = '';
+            document.getElementById('notes').value = '';
+            currentEpisodeMappings = {};
+            currentSeasonRanges = [];
+        }
+
+        renderEpisodeMappings();
+
+        // Update UI for edit mode
+        document.getElementById('submit-btn').textContent = 'Update Override';
+        document.getElementById('cancel-btn').style.display = 'inline-block';
+
+        // Scroll to form
+        document.getElementById('override-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        showNotification(`Editing mapping for TVDB ${tvdbId}`, 'success');
+
+    } catch (error) {
+        console.error('Failed to load mapping for editing:', error);
+        showNotification('Failed to load mapping for editing', 'error');
+    }
+}
+
+function cancelEdit() {
+    clearForm();
+    showNotification('Edit cancelled', 'success');
+}
+
+function clearForm() {
+    // Reset form fields
+    document.getElementById('override-form').reset();
+    document.getElementById('tvdb-id').readOnly = false;
+
+    // Reset state
+    editingTvdbId = null;
+    currentEpisodeMappings = {};
+    currentSeasonRanges = [];
+
+    // Reset UI
+    document.getElementById('submit-btn').textContent = 'Save Override';
+    document.getElementById('cancel-btn').style.display = 'none';
+
+    // Reset season range inputs to defaults
+    document.getElementById('season-num').value = 1;
+    document.getElementById('episode-count').value = 12;
+    document.getElementById('start-absolute').value = 1;
+
+    // Reset single episode inputs
+    document.getElementById('add-season').value = 1;
+    document.getElementById('add-episode').value = 1;
+    document.getElementById('add-absolute').value = 1;
+
+    renderEpisodeMappings();
+}
+
+async function loadEpisodeOverrideInfo(tvdbId) {
+    const infoEl = document.getElementById(`episode-info-${tvdbId}`);
+    if (!infoEl) return;
+
+    try {
+        const response = await fetch(`/api/mappings/override/${tvdbId}`);
+        if (response.ok) {
+            const override = await response.json();
+            const episodeCount = Object.keys(override.season_episode_overrides || {}).length;
+
+            if (episodeCount > 0) {
+                infoEl.textContent = `${episodeCount} episode mapping(s) configured`;
+            } else {
+                infoEl.textContent = 'No episode mappings (titles/IDs only)';
+                infoEl.style.background = '#fff3cd';
+                infoEl.style.color = '#856404';
+            }
+        } else {
+            infoEl.remove();
+        }
+    } catch (error) {
+        infoEl.remove();
+    }
 }
