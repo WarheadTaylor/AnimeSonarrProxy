@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     PROWLARR_URL: str = "http://localhost:9696"
     PROWLARR_API_KEY: str = ""
 
+    # Nyaa Settings (direct integration, bypasses Prowlarr)
+    NYAA_ENABLED: bool = True  # Use Nyaa.si directly instead of Prowlarr
+    NYAA_URL: str = "https://nyaa.si"
+    NYAA_ENGLISH_ONLY: bool = (
+        True  # Filter to English-translated releases (category 1_2)
+    )
+    NYAA_TRUSTED_ONLY: bool = False  # Only show trusted uploads (filter f=2)
+    NYAA_FALLBACK_TO_PROWLARR: bool = False  # Use Prowlarr if Nyaa search fails
+
     # Sonarr Settings (optional - for episode metadata lookup)
     SONARR_URL: Optional[str] = None  # e.g., "http://localhost:8989"
     SONARR_API_KEY: Optional[str] = None
