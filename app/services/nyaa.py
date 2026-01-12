@@ -1,5 +1,6 @@
 """Direct Nyaa.si RSS client for anime torrent searches."""
 
+import asyncio
 import logging
 import re
 from typing import List, Dict, Optional, Tuple
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Cache TTL for Nyaa search results (in seconds)
 NYAA_CACHE_TTL = 60
+
+# Rate limiting defaults
+NYAA_MAX_CONCURRENT_REQUESTS = 2
+NYAA_REQUEST_DELAY_SECONDS = 0.5
 
 # Nyaa category codes
 NYAA_CATEGORY_ANIME_ENGLISH = "1_2"
@@ -38,12 +43,21 @@ class NyaaClient:
     Provides the same interface as ProwlarrClient but searches Nyaa.si directly,
     allowing for better filtering (English-only, trusted uploads) and removing
     the Prowlarr middleware dependency.
+
+    Features:
+    - Combined query support using Nyaa's | (OR) operator
+    - Rate limiting with semaphore and delay between requests
+    - Automatic retry with backoff on 429 errors
     """
 
     def __init__(self):
         self.base_url = settings.NYAA_URL.rstrip("/")
         # Search result cache: {cache_key: (results, timestamp)}
         self._search_cache: Dict[str, Tuple[List[SearchResult], datetime]] = {}
+        # Rate limiting
+        self._semaphore = asyncio.Semaphore(NYAA_MAX_CONCURRENT_REQUESTS)
+        self._last_request_time: float = 0
+        self._request_lock = asyncio.Lock()
 
     def _get_cache_key(
         self, query: str, category: str, filter_code: str, limit: int
@@ -95,6 +109,127 @@ class NyaaClient:
             f"{self.base_url}/?page=rss&q={encoded_query}&c={category}&f={filter_code}"
         )
 
+    def build_combined_query(
+        self,
+        titles: List[str],
+        episodes: Optional[List[int]] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> str:
+        """Build a combined Nyaa search query using | (OR) operator.
+
+        Nyaa search syntax:
+        - foo|bar matches foo OR bar
+        - "foo bar" matches exact phrase
+        - (foo|bar) baz matches (foo OR bar) AND baz
+
+        Args:
+            titles: List of title variants to search for
+            episodes: Optional list of episode numbers to include
+            keywords: Optional list of keywords (e.g., ["OVA", "Special", "Movie"])
+
+        Returns:
+            Combined query string optimized for Nyaa search
+
+        Examples:
+            titles=["Initial D Fifth Stage", "Initial D"], episodes=[1, 27]
+            -> ("Initial D Fifth Stage"|"Initial D") (1|27)
+
+            titles=["Kaguya-sama"], keywords=["OVA", "Special"]
+            -> "Kaguya-sama" (OVA|Special)
+        """
+        if not titles:
+            return ""
+
+        # Sanitize and quote titles (multi-word titles need quotes)
+        def quote_title(t: str) -> str:
+            # Escape any quotes in the title
+            t = t.replace('"', "")
+            # Quote if contains spaces or special chars
+            if " " in t or any(c in t for c in "|()"):
+                return f'"{t}"'
+            return t
+
+        quoted_titles = [quote_title(t) for t in titles if t.strip()]
+
+        # Build title part
+        if len(quoted_titles) == 1:
+            title_part = quoted_titles[0]
+        else:
+            title_part = f"({'|'.join(quoted_titles)})"
+
+        # Build episode part if provided
+        episode_part = ""
+        if episodes:
+            unique_eps = sorted(set(episodes))
+            if len(unique_eps) == 1:
+                episode_part = str(unique_eps[0])
+            else:
+                episode_part = f"({'|'.join(str(e) for e in unique_eps)})"
+
+        # Build keyword part if provided
+        keyword_part = ""
+        if keywords:
+            unique_kw = list(dict.fromkeys(keywords))  # Preserve order, remove dupes
+            if len(unique_kw) == 1:
+                keyword_part = unique_kw[0]
+            else:
+                keyword_part = f"({'|'.join(unique_kw)})"
+
+        # Combine parts
+        parts = [title_part]
+        if keyword_part:
+            parts.append(keyword_part)
+        if episode_part:
+            parts.append(episode_part)
+
+        combined = " ".join(parts)
+
+        # Log the combined query for debugging
+        logger.debug(f"Built combined Nyaa query: {combined}")
+
+        return combined
+
+    async def _rate_limited_request(
+        self, client: httpx.AsyncClient, url: str, max_retries: int = 3
+    ) -> httpx.Response:
+        """Make a rate-limited request with retry on 429.
+
+        Args:
+            client: httpx AsyncClient to use
+            url: URL to request
+            max_retries: Maximum number of retries on 429
+
+        Returns:
+            httpx Response object
+
+        Raises:
+            httpx.HTTPError: On non-429 HTTP errors after retries exhausted
+        """
+        async with self._semaphore:
+            # Enforce minimum delay between requests
+            async with self._request_lock:
+                now = asyncio.get_event_loop().time()
+                time_since_last = now - self._last_request_time
+                if time_since_last < NYAA_REQUEST_DELAY_SECONDS:
+                    await asyncio.sleep(NYAA_REQUEST_DELAY_SECONDS - time_since_last)
+                self._last_request_time = asyncio.get_event_loop().time()
+
+            # Make request with retry logic for 429 errors
+            last_response = await client.get(url)
+            attempt = 0
+
+            while last_response.status_code == 429 and attempt < max_retries:
+                attempt += 1
+                backoff = attempt * 1.0  # 1s, 2s, 3s
+                logger.warning(
+                    f"Nyaa rate limited (429), retrying in {backoff}s "
+                    f"(attempt {attempt}/{max_retries})"
+                )
+                await asyncio.sleep(backoff)
+                last_response = await client.get(url)
+
+            return last_response
+
     async def search(
         self,
         query: str,
@@ -145,7 +280,7 @@ class NyaaClient:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 logger.info(f"Nyaa RSS request: GET {url}")
 
-                response = await client.get(url)
+                response = await self._rate_limited_request(client, url)
 
                 logger.debug(
                     f"Nyaa response: status={response.status_code}, content-type={response.headers.get('content-type')}"
@@ -182,6 +317,51 @@ class NyaaClient:
         except ET.ParseError as e:
             logger.error(f"Nyaa RSS parse error for query '{query}': {e}")
             return []
+
+    async def search_multi(
+        self,
+        titles: List[str],
+        episodes: Optional[List[int]] = None,
+        keywords: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> List[SearchResult]:
+        """
+        Search Nyaa.si using a combined query with multiple titles/episodes.
+
+        Uses Nyaa's | (OR) operator to combine multiple search terms into
+        a single query, avoiding rate limiting from multiple requests.
+
+        Args:
+            titles: List of anime title variants to search for
+            episodes: Optional list of episode numbers to include
+            keywords: Optional list of keywords (e.g., ["OVA", "Special"])
+            limit: Maximum results to return
+
+        Returns:
+            List of SearchResult objects
+
+        Example:
+            search_multi(
+                titles=["Initial D Fifth Stage", "Initial D Second Stage"],
+                episodes=[1, 27, 42]
+            )
+            -> Single query: ("Initial D Fifth Stage"|"Initial D Second Stage") (1|27|42)
+        """
+        if not titles:
+            logger.warning("search_multi called with empty titles list")
+            return []
+
+        # Build combined query
+        combined_query = self.build_combined_query(titles, episodes, keywords)
+
+        if not combined_query:
+            logger.warning("build_combined_query returned empty string")
+            return []
+
+        logger.info(f"Nyaa combined search: {combined_query}")
+
+        # Use the standard search method with the combined query
+        return await self.search(combined_query, limit=limit)
 
     def _parse_rss_response(self, xml_text: str) -> List[SearchResult]:
         """Parse Nyaa RSS XML response into SearchResult objects."""
