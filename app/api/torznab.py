@@ -639,7 +639,8 @@ def create_torznab_rss(
 
         SubElement(item, "title").text = result.title
         SubElement(item, "guid").text = result.guid
-        SubElement(item, "link").text = result.link
+        # Use info_url for <link> (details page) if available, otherwise fall back to download link
+        SubElement(item, "link").text = result.info_url or result.link
         SubElement(item, "pubDate").text = result.pub_date.strftime(
             "%a, %d %b %Y %H:%M:%S +0000"
         )
@@ -648,6 +649,10 @@ def create_torznab_rss(
         SubElement(item, "torznab:attr", name="size", value=str(result.size))
         SubElement(item, "torznab:attr", name="seeders", value=str(result.seeders))
         SubElement(item, "torznab:attr", name="peers", value=str(result.peers))
+
+        # Add downloadvolumefactor and uploadvolumefactor (required by some clients)
+        SubElement(item, "torznab:attr", name="downloadvolumefactor", value="1")
+        SubElement(item, "torznab:attr", name="uploadvolumefactor", value="1")
 
         # Categories - use actual categories from the result
         for category in result.categories:
@@ -661,7 +666,7 @@ def create_torznab_rss(
         if episode is not None:
             SubElement(item, "torznab:attr", name="episode", value=str(episode))
 
-        # Enclosure (download link)
+        # Enclosure (download link) - always use the actual download URL
         SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
 
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(

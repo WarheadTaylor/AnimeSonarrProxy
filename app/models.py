@@ -79,7 +79,8 @@ class SearchResult(BaseModel):
 
     title: str
     guid: str
-    link: str
+    link: str  # Download URL (torrent/magnet)
+    info_url: Optional[str] = None  # Info/details page URL
     pub_date: datetime
     size: int
     seeders: int = 0

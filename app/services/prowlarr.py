@@ -190,6 +190,7 @@ class ProwlarrClient:
         title = item.get("title", "")
         guid = item.get("guid", "")
         download_url = item.get("downloadUrl", "")
+        info_url = item.get("infoUrl", "")
 
         if not all([title, guid, download_url]):
             return None
@@ -235,6 +236,7 @@ class ProwlarrClient:
             title=title,
             guid=guid,
             link=download_url,
+            info_url=info_url if info_url else None,
             pub_date=pub_date,
             size=size,
             seeders=seeders,
@@ -292,10 +294,18 @@ class ProwlarrClient:
         """Parse a single RSS item into SearchResult."""
         title = self._get_text(item, "title")
         guid = self._get_text(item, "guid")
-        link = self._get_text(item, "link")
+        link = self._get_text(item, "link")  # Info/details page URL
         pub_date_str = self._get_text(item, "pubDate")
 
-        if not all([title, guid, link]):
+        # Get download URL from enclosure (preferred) or fall back to link
+        download_url = link
+        enclosure = item.find("enclosure")
+        if enclosure is not None:
+            enclosure_url = enclosure.get("url", "")
+            if enclosure_url:
+                download_url = enclosure_url
+
+        if not all([title, guid, download_url]):
             return None
 
         # Parse size from torznab attributes
@@ -336,19 +346,16 @@ class ProwlarrClient:
             )
             return None
 
-        # Try to extract indexer from enclosure url or other fields
+        # Try to extract indexer from URL
         indexer = "prowlarr"
-        enclosure = item.find("enclosure")
-        if enclosure is not None:
-            url = enclosure.get("url", "")
-            # Try to extract indexer name from URL
-            if "nyaa" in url.lower():
-                indexer = "nyaa"
+        if "nyaa" in download_url.lower():
+            indexer = "nyaa"
 
         return SearchResult(
             title=title,
             guid=guid,
-            link=link,
+            link=download_url,
+            info_url=link if link != download_url else None,
             pub_date=pub_date,
             size=size,
             seeders=seeders,
