@@ -11,8 +11,17 @@ from app.models import TorznabQuery, SearchResult
 from app.services.mapping import mapping_service
 from app.services.query import query_service, filter_results_by_query
 from app.services.prowlarr import prowlarr_client
+from app.services.nyaa import nyaa_client
 from app.services.sonarr import sonarr_client
 from app.services.anime_db import anime_db
+
+
+def get_search_client():
+    """Get the appropriate search client based on settings."""
+    if settings.NYAA_ENABLED:
+        return nyaa_client
+    return prowlarr_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +352,8 @@ async def _search_for_absolute_episodes(
     logger.info(f"Absolute episode search queries: {episode_queries}")
 
     # Execute all queries in parallel
-    tasks = [prowlarr_client.search(q, limit=limit) for q in episode_queries]
+    search_client = get_search_client()
+    tasks = [search_client.search(q, limit=limit) for q in episode_queries]
     results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Combine results
@@ -417,7 +427,8 @@ async def _search_for_special(
     logger.info(f"Special search queries: {special_queries}")
 
     # Execute all queries in parallel
-    tasks = [prowlarr_client.search(q, limit=limit) for q in special_queries]
+    search_client = get_search_client()
+    tasks = [search_client.search(q, limit=limit) for q in special_queries]
     results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Combine results
@@ -484,7 +495,8 @@ async def handle_search(
                 f"{base_query} Movie",
                 base_query,  # Also search without keywords in case it's labeled differently
             ]
-            tasks = [prowlarr_client.search(q, limit=limit) for q in special_queries]
+            search_client = get_search_client()
+            tasks = [search_client.search(q, limit=limit) for q in special_queries]
             results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Combine results
@@ -514,7 +526,8 @@ async def handle_search(
             paginated_results = relevant_results[offset : offset + limit]
         else:
             # Regular search - single query
-            results = await prowlarr_client.search(base_query, limit=limit)
+            search_client = get_search_client()
+            results = await search_client.search(base_query, limit=limit)
 
             # Filter out irrelevant results that don't match the search query
             relevant_results = filter_results_by_query(results, query)
