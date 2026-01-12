@@ -330,39 +330,49 @@ async def _search_for_absolute_episodes(
     Search for regular episodes using absolute episode numbers.
 
     Handles multiple episode numbers (e.g., when both S02E01 and S03E01 are wanted).
-    Builds queries like "Title 26", "Title 51" for each title + episode combination.
+    Uses Nyaa's | (OR) operator to combine titles and episodes into a single query.
     """
-    import asyncio
-
     logger.info(f"Absolute episode search: TVDB {tvdb_id} episodes {absolute_eps}")
 
     # Filter out season-specific titles to avoid wrong results
     filtered_titles = _filter_season_titles(titles)
 
-    # Build queries for each title + episode combination
-    # Limit titles to prevent too many requests
-    episode_queries = []
-    for ep in absolute_eps:
-        for title in filtered_titles[:3]:  # Max 3 titles per episode
-            episode_queries.append(f"{title} {ep}")
+    # Limit titles to prevent overly complex queries
+    search_titles = filtered_titles[:3]
 
-    # Cap total queries to prevent excessive API calls
-    episode_queries = episode_queries[:8]
-
-    logger.info(f"Absolute episode search queries: {episode_queries}")
-
-    # Execute all queries in parallel
     search_client = get_search_client()
-    tasks = [search_client.search(q, limit=limit) for q in episode_queries]
-    results_lists = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Combine results
-    all_results = []
-    for results in results_lists:
-        if isinstance(results, Exception):
-            logger.error(f"Query failed: {results}")
-            continue
-        all_results.extend(results)
+    # Use combined query if Nyaa client supports it (search_multi method)
+    if hasattr(search_client, "search_multi"):
+        # Build a single combined query: ("Title A"|"Title B") (ep1|ep2|ep3)
+        logger.info(
+            f"Absolute episode search: combined query with titles={search_titles}, episodes={absolute_eps}"
+        )
+        all_results = await search_client.search_multi(
+            titles=search_titles, episodes=absolute_eps, limit=limit
+        )
+    else:
+        # Fallback for Prowlarr client: use individual queries
+        import asyncio
+
+        episode_queries = []
+        for ep in absolute_eps:
+            for title in search_titles:
+                episode_queries.append(f"{title} {ep}")
+
+        # Cap total queries to prevent excessive API calls
+        episode_queries = episode_queries[:8]
+        logger.info(f"Absolute episode search queries (fallback): {episode_queries}")
+
+        tasks = [search_client.search(q, limit=limit) for q in episode_queries]
+        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+        all_results = []
+        for results in results_lists:
+            if isinstance(results, Exception):
+                logger.error(f"Query failed: {results}")
+                continue
+            all_results.extend(results)
 
     # Deduplicate by GUID
     seen_guids = set()
@@ -397,47 +407,67 @@ async def _search_for_special(
     """
     Search for specials/OVAs/movies.
 
-    Builds queries with OVA/Special/Movie keywords.
+    Uses Nyaa's | (OR) operator to combine OVA/Special/Movie keywords into a single query.
     """
-    import asyncio
-
     primary_title = titles[0]
     logger.info(f"Special search: TVDB {tvdb_id} title='{primary_title}'")
 
-    # Build special queries - search with OVA/Special/Movie keywords
-    special_queries = [
-        f"{primary_title} OVA",
-        f"{primary_title} Special",
-        f"{primary_title} OAD",
-        f"{primary_title} Movie",
-    ]
+    search_client = get_search_client()
 
-    # If we have an episode number, also try with the number
-    if episode_num is not None:
-        special_queries.extend(
-            [
-                f"{primary_title} OVA {episode_num}",
-                f"{primary_title} Special {episode_num}",
-            ]
+    # Define special keywords
+    special_keywords = ["OVA", "Special", "OAD", "Movie"]
+
+    # Use combined query if Nyaa client supports it
+    if hasattr(search_client, "search_multi"):
+        # Build a single combined query: "Title" (OVA|Special|OAD|Movie)
+        # Optionally include episode number if provided
+        episodes = [episode_num] if episode_num is not None else None
+
+        logger.info(
+            f"Special search: combined query with title='{primary_title}', "
+            f"keywords={special_keywords}, episode={episode_num}"
+        )
+        all_results = await search_client.search_multi(
+            titles=[primary_title],
+            keywords=special_keywords,
+            episodes=episodes,
+            limit=limit,
         )
 
-    # Also add a bare title search as fallback
-    special_queries.append(primary_title)
+        # Also do a bare title search to catch differently labeled specials
+        bare_results = await search_client.search(primary_title, limit=limit)
+        all_results.extend(bare_results)
+    else:
+        # Fallback for Prowlarr client: use individual queries
+        import asyncio
 
-    logger.info(f"Special search queries: {special_queries}")
+        special_queries = [
+            f"{primary_title} OVA",
+            f"{primary_title} Special",
+            f"{primary_title} OAD",
+            f"{primary_title} Movie",
+        ]
 
-    # Execute all queries in parallel
-    search_client = get_search_client()
-    tasks = [search_client.search(q, limit=limit) for q in special_queries]
-    results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+        if episode_num is not None:
+            special_queries.extend(
+                [
+                    f"{primary_title} OVA {episode_num}",
+                    f"{primary_title} Special {episode_num}",
+                ]
+            )
 
-    # Combine results
-    all_results = []
-    for results in results_lists:
-        if isinstance(results, Exception):
-            logger.error(f"Query failed: {results}")
-            continue
-        all_results.extend(results)
+        special_queries.append(primary_title)
+        logger.info(f"Special search queries (fallback): {special_queries}")
+
+        tasks = [search_client.search(q, limit=limit) for q in special_queries]
+        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+        all_results = []
+        for results in results_lists:
+            if isinstance(results, Exception):
+                logger.error(f"Query failed: {results}")
+                continue
+            all_results.extend(results)
 
     # Deduplicate by GUID
     seen_guids = set()
@@ -487,25 +517,40 @@ async def handle_search(
         # For specials, search with OVA/Special/Movie keywords
         if is_special:
             logger.info(f"Special detected - searching with OVA/Special/Movie keywords")
-            import asyncio
 
-            special_queries = [
-                f"{base_query} OVA",
-                f"{base_query} Special",
-                f"{base_query} Movie",
-                base_query,  # Also search without keywords in case it's labeled differently
-            ]
             search_client = get_search_client()
-            tasks = [search_client.search(q, limit=limit) for q in special_queries]
-            results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+            special_keywords = ["OVA", "Special", "Movie"]
 
-            # Combine results
-            all_results = []
-            for results in results_lists:
-                if isinstance(results, Exception):
-                    logger.error(f"Query failed: {results}")
-                    continue
-                all_results.extend(results)
+            # Use combined query if Nyaa client supports it
+            if hasattr(search_client, "search_multi"):
+                logger.info(
+                    f"Special search: combined query with title='{base_query}', keywords={special_keywords}"
+                )
+                all_results = await search_client.search_multi(
+                    titles=[base_query], keywords=special_keywords, limit=limit
+                )
+                # Also do a bare title search
+                bare_results = await search_client.search(base_query, limit=limit)
+                all_results.extend(bare_results)
+            else:
+                # Fallback for Prowlarr client
+                import asyncio
+
+                special_queries = [
+                    f"{base_query} OVA",
+                    f"{base_query} Special",
+                    f"{base_query} Movie",
+                    base_query,
+                ]
+                tasks = [search_client.search(q, limit=limit) for q in special_queries]
+                results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+
+                all_results = []
+                for results in results_lists:
+                    if isinstance(results, Exception):
+                        logger.error(f"Query failed: {results}")
+                        continue
+                    all_results.extend(results)
 
             # Deduplicate by GUID
             seen_guids = set()
