@@ -639,8 +639,10 @@ def create_torznab_rss(
 
         SubElement(item, "title").text = result.title
         SubElement(item, "guid").text = result.guid
-        # Use info_url for <link> (details page) if available, otherwise fall back to download link
-        SubElement(item, "link").text = result.info_url or result.link
+        SubElement(item, "link").text = result.link
+        # Sonarr uses <comments> element for the clickable info/details page link
+        if result.info_url:
+            SubElement(item, "comments").text = result.info_url
         SubElement(item, "pubDate").text = result.pub_date.strftime(
             "%a, %d %b %Y %H:%M:%S +0000"
         )
