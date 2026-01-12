@@ -13,6 +13,43 @@ from app.models import AnimeTitle
 logger = logging.getLogger(__name__)
 
 
+def _is_latin_script(text: str) -> bool:
+    """
+    Check if a string is primarily Latin script (ASCII letters, common accents).
+
+    Returns True if the majority of alphabetic characters are Latin-based,
+    making the title suitable for searching on sites like Nyaa.
+
+    Allows: ASCII letters, common European accented chars, numbers, punctuation.
+    Rejects: CJK, Cyrillic, Arabic, Hebrew, Telugu, Thai, etc.
+    """
+    if not text:
+        return False
+
+    latin_count = 0
+    non_latin_count = 0
+
+    for char in text:
+        if char.isalpha():
+            # Basic Latin (A-Za-z) and Latin Extended (accented chars like é, ü, ñ)
+            code = ord(char)
+            if (
+                0x0041 <= code <= 0x007A  # Basic Latin
+                or 0x00C0 <= code <= 0x024F  # Latin Extended-A/B
+                or 0x1E00 <= code <= 0x1EFF
+            ):  # Latin Extended Additional
+                latin_count += 1
+            else:
+                non_latin_count += 1
+
+    # If no alphabetic chars, consider it neutral (e.g., just numbers)
+    if latin_count + non_latin_count == 0:
+        return True
+
+    # Require majority Latin (>50%)
+    return latin_count > non_latin_count
+
+
 class AnimeOfflineDatabase:
     """Handles anime-offline-database operations."""
 
@@ -143,16 +180,39 @@ class AnimeOfflineDatabase:
         )
 
     def get_all_titles(self, anime: Dict) -> List[str]:
-        """Get all unique title variations as a flat list."""
-        titles = set()
+        """
+        Get all unique title variations as a flat list.
 
-        if anime.get("title"):
-            titles.add(anime["title"])
+        Titles are ordered with Latin-script titles first (for searchability),
+        followed by non-Latin titles. The primary title is always first if Latin.
+        """
+        primary_title = anime.get("title", "")
+        synonyms = anime.get("synonyms", [])
 
-        for synonym in anime.get("synonyms", []):
-            titles.add(synonym)
+        # Separate Latin and non-Latin titles
+        latin_titles = []
+        non_latin_titles = []
 
-        return list(titles)
+        # Process primary title first
+        if primary_title:
+            if _is_latin_script(primary_title):
+                latin_titles.append(primary_title)
+            else:
+                non_latin_titles.append(primary_title)
+
+        # Process synonyms
+        for synonym in synonyms:
+            if synonym == primary_title:
+                continue  # Skip duplicate
+            if _is_latin_script(synonym):
+                if synonym not in latin_titles:
+                    latin_titles.append(synonym)
+            else:
+                if synonym not in non_latin_titles:
+                    non_latin_titles.append(synonym)
+
+        # Return Latin titles first, then non-Latin
+        return latin_titles + non_latin_titles
 
     def search_by_title(self, query: str, limit: int = 5) -> List[Dict]:
         """
@@ -213,13 +273,25 @@ class AnimeOfflineDatabase:
         Try to identify anime from query and return optimal search titles.
 
         This is useful when Sonarr sends a generic search with a long/concatenated query.
+
+        Returns only Latin-script titles suitable for searching on Nyaa/torrent sites.
+        Non-Latin titles (Telugu, Chinese, Japanese kanji, etc.) are filtered out
+        since they won't return results.
         """
         matches = self.search_by_title(query, limit=1)
         if matches:
             anime = matches[0]
             titles = self.get_all_titles(anime)
-            # Return the main title and first synonym
-            return titles[:2] if len(titles) > 1 else titles
+            # Filter to only Latin-script titles (already sorted Latin-first by get_all_titles)
+            latin_titles = [t for t in titles if _is_latin_script(t)]
+            if latin_titles:
+                # Return the main title and first synonym
+                return latin_titles[:2] if len(latin_titles) > 1 else latin_titles
+            # Fallback: if no Latin titles found, log warning and return first available
+            logger.warning(
+                f"No Latin-script titles found for anime: {anime.get('title')}"
+            )
+            return titles[:1] if titles else []
         return []
 
 
