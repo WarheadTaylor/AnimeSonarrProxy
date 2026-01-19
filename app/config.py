@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     SONARR_URL: Optional[str] = None  # e.g., "http://localhost:8989"
     SONARR_API_KEY: Optional[str] = None
 
+    # Radarr Settings (optional - for movie metadata lookup)
+    RADARR_URL: Optional[str] = None  # e.g., "http://localhost:7878"
+    RADARR_API_KEY: Optional[str] = None
+    ENABLE_MOVIE_SEARCH: bool = True  # Enable anime movie search support
+
     # AniList API Settings
     ANILIST_API_URL: str = "https://graphql.anilist.co"
     ANILIST_RATE_LIMIT: int = 90  # requests per minute

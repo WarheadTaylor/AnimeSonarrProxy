@@ -1,13 +1,17 @@
 // Global state
 let allMappings = [];
+let allMovieMappings = [];
 let currentEpisodeMappings = {};  // {"S01E01": 1, "S01E02": 2, ...}
 let currentSeasonRanges = [];     // [{season: 1, episodes: 12, start_absolute: 1}]
 let editingTvdbId = null;         // null = create mode, number = edit mode
+let editingTmdbId = null;         // null = create mode, number = edit mode (for movies)
+let currentTab = 'tv';            // 'tv' or 'movies'
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     loadStats();
     loadMappings();
+    loadMovieMappings();
     setupEventListeners();
     renderEpisodeMappings();
 });
@@ -15,9 +19,25 @@ document.addEventListener('DOMContentLoaded', () => {
 function setupEventListeners() {
     // Form submission
     document.getElementById('override-form').addEventListener('submit', handleOverrideSubmit);
+    document.getElementById('movie-override-form').addEventListener('submit', handleMovieOverrideSubmit);
 
-    // Search filter
+    // Search filters
     document.getElementById('search-mappings').addEventListener('input', filterMappings);
+    document.getElementById('search-movie-mappings').addEventListener('input', filterMovieMappings);
+}
+
+function switchTab(tab) {
+    currentTab = tab;
+
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+
+    // Update tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.toggle('active', content.id === `${tab}-tab`);
+    });
 }
 
 async function loadStats() {
@@ -27,6 +47,8 @@ async function loadStats() {
 
         document.getElementById('total-mappings').textContent = stats.total_mappings;
         document.getElementById('total-overrides').textContent = stats.total_overrides;
+        document.getElementById('total-movie-mappings').textContent = stats.total_movie_mappings || 0;
+        document.getElementById('total-movie-overrides').textContent = stats.total_movie_overrides || 0;
 
         if (stats.anime_db_last_update) {
             const date = new Date(stats.anime_db_last_update);
@@ -520,4 +542,256 @@ async function loadEpisodeOverrideInfo(tvdbId) {
     } catch (error) {
         infoEl.remove();
     }
+}
+
+// ==========================================
+// Movie Mapping Functions
+// ==========================================
+
+async function loadMovieMappings() {
+    try {
+        const response = await fetch('/api/movies/mappings');
+        allMovieMappings = await response.json();
+
+        renderMovieMappings(allMovieMappings);
+    } catch (error) {
+        console.error('Failed to load movie mappings:', error);
+        document.getElementById('movie-mappings-list').innerHTML =
+            '<p style="color: red;">Failed to load movie mappings. Check console for errors.</p>';
+    }
+}
+
+function renderMovieMappings(mappings) {
+    const container = document.getElementById('movie-mappings-list');
+
+    if (mappings.length === 0) {
+        container.innerHTML = '<p>No movie mappings found. Search for an anime movie in Radarr to create mappings.</p>';
+        return;
+    }
+
+    const html = mappings.map(mapping => createMovieMappingCard(mapping)).join('');
+    container.innerHTML = html;
+}
+
+function createMovieMappingCard(mapping) {
+    const titles = getAllTitles(mapping);
+    const overrideBadge = mapping.user_override
+        ? '<span class="badge">USER OVERRIDE</span>'
+        : '';
+
+    return `
+        <div class="mapping-card" data-tmdb-id="${mapping.tmdb_id}">
+            <div class="mapping-header">
+                <div class="mapping-title">
+                    <h3>${escapeHtml(titles[0] || 'Unknown')}</h3>
+                    ${overrideBadge}
+                </div>
+                <div class="mapping-actions">
+                    <button class="btn-edit" onclick="editMovieMapping(${mapping.tmdb_id})">
+                        Edit
+                    </button>
+                    ${mapping.user_override ? `
+                        <button class="btn-danger" onclick="deleteMovieOverride(${mapping.tmdb_id})">
+                            Delete
+                        </button>
+                    ` : ''}
+                </div>
+            </div>
+
+            <div class="mapping-ids">
+                <span><strong>TMDB:</strong> ${mapping.tmdb_id}</span>
+                ${mapping.imdb_id ? `<span><strong>IMDb:</strong> ${mapping.imdb_id}</span>` : ''}
+                ${mapping.anilist_id ? `<span><strong>AniList:</strong> ${mapping.anilist_id}</span>` : ''}
+                ${mapping.mal_id ? `<span><strong>MAL:</strong> ${mapping.mal_id}</span>` : ''}
+                ${mapping.year ? `<span><strong>Year:</strong> ${mapping.year}</span>` : ''}
+            </div>
+
+            <div class="mapping-titles">
+                <h4>Search Titles:</h4>
+                <div class="title-list">
+                    ${titles.map(title => `<span class="title-tag">${escapeHtml(title)}</span>`).join('')}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function filterMovieMappings() {
+    const query = document.getElementById('search-movie-mappings').value.toLowerCase();
+
+    if (!query) {
+        renderMovieMappings(allMovieMappings);
+        return;
+    }
+
+    const filtered = allMovieMappings.filter(mapping => {
+        // Search by TMDB ID
+        if (mapping.tmdb_id.toString().includes(query)) {
+            return true;
+        }
+
+        // Search by IMDb ID
+        if (mapping.imdb_id && mapping.imdb_id.toLowerCase().includes(query)) {
+            return true;
+        }
+
+        // Search by any title
+        const titles = getAllTitles(mapping);
+        return titles.some(title => title.toLowerCase().includes(query));
+    });
+
+    renderMovieMappings(filtered);
+}
+
+async function handleMovieOverrideSubmit(event) {
+    event.preventDefault();
+
+    const tmdbId = parseInt(document.getElementById('tmdb-id').value);
+    const imdbId = document.getElementById('movie-imdb-id').value.trim() || null;
+    const anilistId = document.getElementById('movie-anilist-id').value;
+    const malId = document.getElementById('movie-mal-id').value;
+    const year = document.getElementById('movie-year').value;
+    const customTitles = document.getElementById('movie-custom-titles').value
+        .split('\n')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+    const notes = document.getElementById('movie-notes').value;
+
+    const override = {
+        tmdb_id: tmdbId,
+        imdb_id: imdbId,
+        anilist_id: anilistId ? parseInt(anilistId) : null,
+        mal_id: malId ? parseInt(malId) : null,
+        year: year ? parseInt(year) : null,
+        custom_titles: customTitles,
+        notes: notes
+    };
+
+    try {
+        const response = await fetch('/api/movies/mappings/override', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(override)
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to save movie override');
+        }
+
+        const action = editingTmdbId ? 'updated' : 'saved';
+        showNotification(`Movie override ${action} successfully!`, 'success');
+
+        // Reset form and state
+        clearMovieForm();
+
+        // Reload data
+        await loadStats();
+        await loadMovieMappings();
+
+    } catch (error) {
+        console.error('Failed to save movie override:', error);
+        showNotification(error.message, 'error');
+    }
+}
+
+async function deleteMovieOverride(tmdbId) {
+    if (!confirm(`Delete override for TMDB ID ${tmdbId}?`)) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/movies/mappings/override/${tmdbId}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to delete movie override');
+        }
+
+        showNotification('Movie override deleted successfully!', 'success');
+
+        // Reload data
+        await loadStats();
+        await loadMovieMappings();
+
+    } catch (error) {
+        console.error('Failed to delete movie override:', error);
+        showNotification(error.message, 'error');
+    }
+}
+
+async function editMovieMapping(tmdbId) {
+    try {
+        // Try to fetch existing override
+        let override = null;
+        try {
+            const response = await fetch(`/api/movies/mappings/override/${tmdbId}`);
+            if (response.ok) {
+                override = await response.json();
+            }
+        } catch (e) {
+            // No existing override, that's fine
+        }
+
+        // Set edit mode
+        editingTmdbId = tmdbId;
+
+        // Populate form
+        document.getElementById('tmdb-id').value = tmdbId;
+        document.getElementById('tmdb-id').readOnly = true;
+
+        if (override) {
+            document.getElementById('movie-imdb-id').value = override.imdb_id || '';
+            document.getElementById('movie-anilist-id').value = override.anilist_id || '';
+            document.getElementById('movie-mal-id').value = override.mal_id || '';
+            document.getElementById('movie-year').value = override.year || '';
+            document.getElementById('movie-custom-titles').value = (override.custom_titles || []).join('\n');
+            document.getElementById('movie-notes').value = override.notes || '';
+        } else {
+            // No override exists yet, just populate TMDB ID
+            document.getElementById('movie-imdb-id').value = '';
+            document.getElementById('movie-anilist-id').value = '';
+            document.getElementById('movie-mal-id').value = '';
+            document.getElementById('movie-year').value = '';
+            document.getElementById('movie-custom-titles').value = '';
+            document.getElementById('movie-notes').value = '';
+        }
+
+        // Update UI for edit mode
+        document.getElementById('movie-submit-btn').textContent = 'Update Movie Override';
+        document.getElementById('movie-cancel-btn').style.display = 'inline-block';
+
+        // Make sure we're on the movies tab
+        switchTab('movies');
+
+        // Scroll to form
+        document.getElementById('movie-override-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+        showNotification(`Editing movie mapping for TMDB ${tmdbId}`, 'success');
+
+    } catch (error) {
+        console.error('Failed to load movie mapping for editing:', error);
+        showNotification('Failed to load movie mapping for editing', 'error');
+    }
+}
+
+function cancelMovieEdit() {
+    clearMovieForm();
+    showNotification('Edit cancelled', 'success');
+}
+
+function clearMovieForm() {
+    // Reset form fields
+    document.getElementById('movie-override-form').reset();
+    document.getElementById('tmdb-id').readOnly = false;
+
+    // Reset state
+    editingTmdbId = null;
+
+    // Reset UI
+    document.getElementById('movie-submit-btn').textContent = 'Save Movie Override';
+    document.getElementById('movie-cancel-btn').style.display = 'none';
 }

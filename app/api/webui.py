@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pathlib import Path
 
-from app.models import AnimeMapping, MappingOverride
+from app.models import AnimeMapping, MappingOverride, MovieMapping, MovieMappingOverride
 from app.services.mapping import mapping_service
+from app.services.movie_mapping import movie_mapping_service
 from app.services.anilist import anilist_client
 
 logger = logging.getLogger(__name__)
@@ -107,10 +108,84 @@ async def get_stats():
     return {
         "total_mappings": len(mapping_service.cache),
         "total_overrides": len(mapping_service.overrides),
+        "total_movie_mappings": len(movie_mapping_service.cache),
+        "total_movie_overrides": len(movie_mapping_service.overrides),
         "anime_db_last_update": anime_db.last_update.isoformat()
         if anime_db.last_update
         else None,
     }
+
+
+# ==================== Movie Mapping Endpoints ====================
+
+
+@router.get("/api/movies/mappings")
+async def get_movie_mappings() -> List[MovieMapping]:
+    """Get all cached movie mappings."""
+    mappings = await movie_mapping_service.get_all_mappings()
+    return mappings
+
+
+@router.get("/api/movies/mappings/{tmdb_id}")
+async def get_movie_mapping(tmdb_id: int) -> Optional[MovieMapping]:
+    """Get a specific movie mapping by TMDB ID."""
+    mapping = await movie_mapping_service.get_mapping(tmdb_id)
+    if mapping is None:
+        raise HTTPException(
+            status_code=404, detail=f"No movie mapping found for TMDB {tmdb_id}"
+        )
+    return mapping
+
+
+@router.post("/api/movies/mappings/override")
+async def create_movie_override(override: MovieMappingOverride):
+    """Create or update a user override for a TMDB ID."""
+    logger.info(f"Creating movie override for TMDB {override.tmdb_id}")
+
+    # Validate AniList ID if provided
+    if override.anilist_id:
+        anilist_data = await anilist_client.get_by_anilist_id(override.anilist_id)
+        if not anilist_data:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid AniList ID: {override.anilist_id}"
+            )
+
+    await movie_mapping_service.save_override(override)
+    return {
+        "status": "success",
+        "message": f"Movie override saved for TMDB {override.tmdb_id}",
+    }
+
+
+@router.get("/api/movies/mappings/override/{tmdb_id}")
+async def get_movie_override(tmdb_id: int) -> MovieMappingOverride:
+    """Get a specific movie override by TMDB ID for editing."""
+    if tmdb_id in movie_mapping_service.overrides:
+        return movie_mapping_service.overrides[tmdb_id]
+    raise HTTPException(
+        status_code=404, detail=f"No movie override found for TMDB {tmdb_id}"
+    )
+
+
+@router.delete("/api/movies/mappings/override/{tmdb_id}")
+async def delete_movie_override(tmdb_id: int):
+    """Delete a movie user override."""
+    success = await movie_mapping_service.delete_override(tmdb_id)
+    if success:
+        return {
+            "status": "success",
+            "message": f"Movie override deleted for TMDB {tmdb_id}",
+        }
+    else:
+        raise HTTPException(
+            status_code=404, detail=f"No movie override found for TMDB {tmdb_id}"
+        )
+
+
+@router.get("/api/movies/overrides")
+async def get_all_movie_overrides() -> List[MovieMappingOverride]:
+    """Get all movie user overrides."""
+    return await movie_mapping_service.get_all_overrides()
 
 
 # Import anime_db for stats

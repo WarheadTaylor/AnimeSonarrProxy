@@ -16,11 +16,19 @@
         <div class="stats">
             <div class="stat-card">
                 <h3 id="total-mappings">0</h3>
-                <p>Total Mappings</p>
+                <p>TV Mappings</p>
             </div>
             <div class="stat-card">
                 <h3 id="total-overrides">0</h3>
-                <p>User Overrides</p>
+                <p>TV Overrides</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="total-movie-mappings">0</h3>
+                <p>Movie Mappings</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="total-movie-overrides">0</h3>
+                <p>Movie Overrides</p>
             </div>
             <div class="stat-card">
                 <h3 id="last-update">-</h3>
@@ -28,8 +36,16 @@
             </div>
         </div>
 
+        <!-- Tab Navigation -->
+        <div class="tab-navigation">
+            <button class="tab-btn active" data-tab="tv" onclick="switchTab('tv')">TV Series (Sonarr)</button>
+            <button class="tab-btn" data-tab="movies" onclick="switchTab('movies')">Movies (Radarr)</button>
+        </div>
+
+        <!-- TV Tab Content -->
+        <div class="tab-content active" id="tv-tab">
         <div class="section">
-            <h2>Add New Override</h2>
+            <h2>Add New TV Override</h2>
             <form id="override-form">
                 <div class="form-group">
                     <label for="tvdb-id">TVDB ID *</label>
@@ -123,7 +139,7 @@ Frieren
         </div>
 
         <div class="section">
-            <h2>Cached Mappings</h2>
+            <h2>Cached TV Mappings</h2>
             <div class="table-controls">
                 <input type="text" id="search-mappings" placeholder="Search by TVDB ID or title...">
                 <button onclick="loadMappings()" class="btn-secondary">Refresh</button>
@@ -132,6 +148,70 @@ Frieren
                 <p>Loading mappings...</p>
             </div>
         </div>
+        </div><!-- End TV Tab -->
+
+        <!-- Movies Tab Content -->
+        <div class="tab-content" id="movies-tab">
+        <div class="section">
+            <h2>Add New Movie Override</h2>
+            <form id="movie-override-form">
+                <div class="form-group">
+                    <label for="tmdb-id">TMDB ID *</label>
+                    <input type="number" id="tmdb-id" required placeholder="e.g., 916224">
+                    <small>Find on TMDB.org in URL: themoviedb.org/movie/<strong>ID</strong></small>
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-imdb-id">IMDb ID (optional)</label>
+                    <input type="text" id="movie-imdb-id" placeholder="e.g., tt16428256">
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-anilist-id">AniList ID (optional)</label>
+                    <input type="number" id="movie-anilist-id" placeholder="e.g., 142838">
+                    <small>Find on AniList.co in URL: anilist.co/anime/<strong>ID</strong></small>
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-mal-id">MyAnimeList ID (optional)</label>
+                    <input type="number" id="movie-mal-id" placeholder="e.g., 50594">
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-year">Release Year (optional)</label>
+                    <input type="number" id="movie-year" placeholder="e.g., 2022">
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-custom-titles">Custom Search Titles (one per line)</label>
+                    <textarea id="movie-custom-titles" rows="4" placeholder="Suzume no Tojimari
+Suzume
+すずめの戸締まり"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="movie-notes">Notes (optional)</label>
+                    <textarea id="movie-notes" rows="2" placeholder="Additional notes about this mapping..."></textarea>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary" id="movie-submit-btn">Save Movie Override</button>
+                    <button type="button" class="btn-secondary" id="movie-cancel-btn" onclick="cancelMovieEdit()" style="display: none;">Cancel Edit</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="section">
+            <h2>Cached Movie Mappings</h2>
+            <div class="table-controls">
+                <input type="text" id="search-movie-mappings" placeholder="Search by TMDB ID or title...">
+                <button onclick="loadMovieMappings()" class="btn-secondary">Refresh</button>
+            </div>
+            <div id="movie-mappings-list" class="mappings-table">
+                <p>Loading movie mappings...</p>
+            </div>
+        </div>
+        </div><!-- End Movies Tab -->
     </div>
 
     <div id="notification" class="notification hidden"></div>

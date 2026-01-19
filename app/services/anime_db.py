@@ -58,6 +58,7 @@ class AnimeOfflineDatabase:
         self.data: Dict = {}
         self.last_update: Optional[datetime] = None
         self._tvdb_index: Dict[int, Dict] = {}
+        self._tmdb_index: Dict[int, Dict] = {}  # For movie lookups
 
     async def initialize(self):
         """Initialize database - load or download if needed."""
@@ -117,8 +118,9 @@ class AnimeOfflineDatabase:
             self.data = {}
 
     def _build_tvdb_index(self):
-        """Build TVDB ID index for fast lookups."""
+        """Build TVDB and TMDB ID indexes for fast lookups."""
         self._tvdb_index = {}
+        self._tmdb_index = {}
         for anime in self.data.get("data", []):
             sources = anime.get("sources", [])
             for source in sources:
@@ -129,10 +131,21 @@ class AnimeOfflineDatabase:
                         self._tvdb_index[tvdb_id] = anime
                     except (ValueError, IndexError):
                         continue
+                elif "themoviedb.org/movie/" in source:
+                    try:
+                        # Extract TMDB movie ID from URL
+                        tmdb_id = int(source.split("/")[-1])
+                        self._tmdb_index[tmdb_id] = anime
+                    except (ValueError, IndexError):
+                        continue
 
     def get_by_tvdb_id(self, tvdb_id: int) -> Optional[Dict]:
         """Get anime entry by TVDB ID."""
         return self._tvdb_index.get(tvdb_id)
+
+    def get_by_tmdb_id(self, tmdb_id: int) -> Optional[Dict]:
+        """Get anime movie entry by TMDB ID."""
+        return self._tmdb_index.get(tmdb_id)
 
     def extract_ids(self, anime: Dict) -> Dict[str, Optional[int]]:
         """Extract AniDB, AniList and MAL IDs from anime entry."""
@@ -147,6 +160,54 @@ class AnimeOfflineDatabase:
                     # Handle both formats:
                     # https://anidb.net/anime/12345
                     # https://anidb.net/perl-bin/animedb.pl?show=anime&aid=12345
+                    if "aid=" in source:
+                        aid_str = source.split("aid=")[-1].split("&")[0]
+                        ids["anidb_id"] = int(aid_str)
+                    else:
+                        ids["anidb_id"] = int(source.split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif "anilist.co/anime/" in source:
+                try:
+                    ids["anilist_id"] = int(source.split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif "myanimelist.net/anime/" in source:
+                try:
+                    ids["mal_id"] = int(source.split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+
+        return ids
+
+    def extract_movie_ids(self, anime: Dict) -> Dict[str, Optional[any]]:
+        """Extract TMDB, IMDb, AniDB, AniList and MAL IDs from anime movie entry."""
+        ids = {
+            "tmdb_id": None,
+            "imdb_id": None,  # String like "tt1234567"
+            "anidb_id": None,
+            "anilist_id": None,
+            "mal_id": None,
+        }
+
+        for source in anime.get("sources", []):
+            if "themoviedb.org/movie/" in source:
+                try:
+                    ids["tmdb_id"] = int(source.split("/")[-1])
+                except (ValueError, IndexError):
+                    pass
+            elif "imdb.com/title/" in source:
+                try:
+                    # Extract IMDb ID (e.g., "tt1234567")
+                    imdb_part = source.split("/title/")[-1]
+                    ids["imdb_id"] = imdb_part.rstrip("/").split("/")[0]
+                except (ValueError, IndexError):
+                    pass
+            elif (
+                "anidb.net/anime/" in source
+                or "anidb.net/perl-bin/animedb.pl?show=anime&aid=" in source
+            ):
+                try:
                     if "aid=" in source:
                         aid_str = source.split("aid=")[-1].split("&")[0]
                         ids["anidb_id"] = int(aid_str)

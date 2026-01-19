@@ -12,7 +12,9 @@ from app.config import settings
 from app.api import torznab, webui
 from app.services.anime_db import anime_db
 from app.services.mapping import mapping_service
+from app.services.movie_mapping import movie_mapping_service
 from app.services.sonarr import sonarr_client
+from app.services.radarr import radarr_client
 from app.services import episode
 
 # Configure logging
@@ -43,6 +45,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing episode translator...")
     episode.episode_translator = episode.EpisodeTranslator(mapping_service)
 
+    # Initialize movie mapping service (for Radarr support)
+    if settings.ENABLE_MOVIE_SEARCH:
+        logger.info("Initializing movie mapping service...")
+        await movie_mapping_service.initialize()
+    else:
+        logger.info("Movie search is disabled (ENABLE_MOVIE_SEARCH=False)")
+
     # Initialize Sonarr client (optional - for episode metadata lookup)
     if settings.SONARR_URL and settings.SONARR_API_KEY:
         logger.info("Initializing Sonarr client...")
@@ -50,6 +59,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(
             "Sonarr integration not configured (SONARR_URL/SONARR_API_KEY not set)"
+        )
+
+    # Initialize Radarr client (optional - for movie metadata lookup)
+    if settings.RADARR_URL and settings.RADARR_API_KEY:
+        logger.info("Initializing Radarr client...")
+        radarr_client.configure(settings.RADARR_URL, settings.RADARR_API_KEY)
+    else:
+        logger.info(
+            "Radarr integration not configured (RADARR_URL/RADARR_API_KEY not set)"
         )
 
     logger.info(
