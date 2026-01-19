@@ -300,12 +300,14 @@ class QueryService:
 
         for title in titles:
             if is_special:
-                # For specials (season 0), search with OVA/Special/Movie keywords
+                # For specials (season 0), search with OVA/Special/OAD/Movie keywords
                 # Episode number might not match, so also search without it
                 queries.append(f"{title} OVA")
                 queries.append(f"{title} Special")
+                queries.append(f"{title} OAD")
                 queries.append(f"{title} OVA {absolute_episode}")
                 queries.append(f"{title} Special {absolute_episode}")
+                queries.append(f"{title} OAD {absolute_episode}")
                 # Some specials are movies
                 queries.append(f"{title} Movie")
             else:
