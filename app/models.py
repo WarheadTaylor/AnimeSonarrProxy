@@ -126,6 +126,47 @@ class MappingOverride(BaseModel):
     notes: str = ""
 
 
+class MovieMapping(BaseModel):
+    """Mapping between TMDB and anime databases for movies."""
+
+    tmdb_id: int
+    imdb_id: Optional[str] = None  # IMDb IDs are strings (e.g., "tt1234567")
+    anidb_id: Optional[int] = None
+    anilist_id: Optional[int] = None
+    mal_id: Optional[int] = None
+    titles: AnimeTitle
+    year: Optional[int] = None
+    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    user_override: bool = False  # True if manually set via WebUI
+
+    def get_search_titles(self) -> List[str]:
+        """Get all unique title variations for search queries."""
+        titles = []
+        if self.titles.romaji:
+            titles.append(self.titles.romaji)
+        if self.titles.english and self.titles.english not in titles:
+            titles.append(self.titles.english)
+        if self.titles.native and self.titles.native not in titles:
+            titles.append(self.titles.native)
+        for synonym in self.titles.synonyms:
+            if synonym and synonym not in titles:
+                titles.append(synonym)
+        return titles
+
+
+class MovieMappingOverride(BaseModel):
+    """User-provided movie mapping override via WebUI."""
+
+    tmdb_id: int
+    imdb_id: Optional[str] = None
+    anidb_id: Optional[int] = None
+    anilist_id: Optional[int] = None
+    mal_id: Optional[int] = None
+    custom_titles: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    notes: str = ""
+
+
 class EpisodeInfo(BaseModel):
     """Episode information from Sonarr API."""
 

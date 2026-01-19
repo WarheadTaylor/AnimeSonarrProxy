@@ -14,6 +14,8 @@ from app.services.prowlarr import prowlarr_client
 from app.services.nyaa import nyaa_client
 from app.services.sonarr import sonarr_client
 from app.services.anime_db import anime_db
+from app.services.movie_mapping import movie_mapping_service
+from app.services.movie_query import movie_query_service
 
 
 def get_search_client():
@@ -35,6 +37,9 @@ async def torznab_api(
     tvdbid: Optional[int] = Query(None, description="TVDB ID"),
     season: Optional[int] = Query(None, description="Season number"),
     ep: Optional[int] = Query(None, description="Episode number"),
+    tmdbid: Optional[int] = Query(None, description="TMDB ID (for movies)"),
+    imdbid: Optional[str] = Query(None, description="IMDb ID (for movies)"),
+    year: Optional[int] = Query(None, description="Release year (for movies)"),
     apikey: Optional[str] = Query(None, description="API key"),
     limit: Optional[int] = Query(100, description="Result limit"),
     offset: Optional[int] = Query(0, description="Result offset"),
@@ -46,6 +51,7 @@ async def torznab_api(
     - caps: Return capabilities
     - search: Generic search
     - tvsearch: TV search with anime title mapping
+    - movie: Movie search with anime movie title mapping
     """
     # Handle capabilities request (no auth required per Torznab spec)
     if t == "caps":
@@ -83,6 +89,14 @@ async def torznab_api(
 
         return await handle_tvsearch(tvdbid, season, ep, limit, offset)
 
+    # Handle movie search (for Radarr)
+    elif t == "movie":
+        if not settings.ENABLE_MOVIE_SEARCH:
+            logger.warning("Movie search is disabled")
+            return create_empty_rss()
+
+        return await handle_movie_search(tmdbid, imdbid, q, year, limit, offset)
+
     # Handle generic search
     elif t == "search":
         if q is None:
@@ -105,8 +119,14 @@ async def handle_caps() -> Response:
     <searching>
         <search available="yes" supportedParams="q"/>
         <tv-search available="yes" supportedParams="q,tvdbid,season,ep"/>
+        <movie-search available="yes" supportedParams="q,tmdbid,imdbid,year"/>
     </searching>
     <categories>
+        <category id="2000" name="Movies">
+            <subcat id="2010" name="Movies/Foreign"/>
+            <subcat id="2020" name="Movies/Other"/>
+            <subcat id="2060" name="Movies/Anime"/>
+        </category>
         <category id="5000" name="TV">
             <subcat id="5070" name="Anime"/>
         </category>
@@ -727,6 +747,182 @@ def create_torznab_rss(
             SubElement(item, "torznab:attr", name="episode", value=str(episode))
 
         # Enclosure (download link) - always use the actual download URL
+        SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
+
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(
+        rss, encoding="unicode"
+    )
+
+
+async def handle_movie_search(
+    tmdb_id: Optional[int],
+    imdb_id: Optional[str],
+    query: Optional[str],
+    year: Optional[int],
+    limit: int,
+    offset: int,
+) -> Response:
+    """
+    Handle movie search for Radarr integration.
+
+    Supports:
+    - TMDB ID lookup (primary)
+    - IMDb ID lookup (fallback)
+    - Title query (fallback)
+    """
+    logger.info(
+        f"Movie search: TMDB={tmdb_id}, IMDb={imdb_id}, query='{query}', year={year}"
+    )
+
+    # Try TMDB ID first (Radarr's preferred method)
+    if tmdb_id is not None:
+        mapping = await movie_mapping_service.get_mapping(tmdb_id)
+        if mapping:
+            logger.info(
+                f"Found movie mapping for TMDB {tmdb_id}: {mapping.titles.romaji or mapping.titles.english}"
+            )
+            return await _search_movie_by_mapping(mapping, year, limit, offset, tmdb_id=tmdb_id)
+        else:
+            logger.warning(f"No mapping found for TMDB {tmdb_id}")
+
+    # Try IMDb ID if TMDB lookup failed or wasn't provided
+    if imdb_id is not None:
+        # Normalize IMDb ID format (ensure it starts with 'tt')
+        if not imdb_id.startswith("tt"):
+            imdb_id = f"tt{imdb_id}"
+
+        mapping = await movie_mapping_service.get_mapping_by_imdb(imdb_id)
+        if mapping:
+            logger.info(
+                f"Found movie mapping for IMDb {imdb_id}: {mapping.titles.romaji or mapping.titles.english}"
+            )
+            return await _search_movie_by_mapping(mapping, year, limit, offset, imdb_id=imdb_id)
+        else:
+            logger.warning(f"No mapping found for IMDb {imdb_id}")
+
+    # Fallback to title query
+    if query:
+        logger.info(f"Falling back to title query search: {query}")
+        return await _search_movie_by_query(query, year, limit, offset)
+
+    # No valid search parameters
+    logger.warning("Movie search called without valid parameters")
+
+    # For indexer testing, return a default search
+    if tmdb_id is None and imdb_id is None and query is None:
+        logger.info(
+            "Movie search called without parameters - returning default search for 'Suzume' for indexer test"
+        )
+        return await _search_movie_by_query("Suzume", None, limit, offset)
+
+    return create_empty_rss()
+
+
+async def _search_movie_by_mapping(
+    mapping,
+    year: Optional[int],
+    limit: int,
+    offset: int,
+    tmdb_id: Optional[int] = None,
+    imdb_id: Optional[str] = None,
+) -> Response:
+    """Search for a movie using its mapping."""
+    try:
+        results = await movie_query_service.search_movie(mapping, year)
+        logger.info(f"Found {len(results)} results for movie search")
+
+        # Apply pagination
+        paginated_results = results[offset : offset + limit]
+
+        # Convert to Torznab RSS with movie categories
+        rss_xml = create_movie_torznab_rss(
+            paginated_results,
+            tmdb_id=tmdb_id,
+            imdb_id=imdb_id,
+            year=year or mapping.year,
+        )
+
+        return Response(content=rss_xml, media_type="application/xml")
+
+    except Exception as e:
+        logger.error(f"Movie search failed: {e}", exc_info=True)
+        return create_empty_rss()
+
+
+async def _search_movie_by_query(
+    query: str,
+    year: Optional[int],
+    limit: int,
+    offset: int,
+) -> Response:
+    """Search for a movie by title query."""
+    try:
+        results = await movie_query_service.search_movie_by_query(query)
+        logger.info(f"Found {len(results)} results for movie query: {query}")
+
+        # Apply pagination
+        paginated_results = results[offset : offset + limit]
+
+        # Convert to Torznab RSS with movie categories
+        rss_xml = create_movie_torznab_rss(paginated_results, year=year)
+
+        return Response(content=rss_xml, media_type="application/xml")
+
+    except Exception as e:
+        logger.error(f"Movie query search failed: {e}", exc_info=True)
+        return create_empty_rss()
+
+
+def create_movie_torznab_rss(
+    results: list[SearchResult],
+    tmdb_id: Optional[int] = None,
+    imdb_id: Optional[str] = None,
+    year: Optional[int] = None,
+) -> str:
+    """Create Torznab-compliant RSS XML for movie search results."""
+    rss = Element("rss", version="2.0")
+    rss.set("xmlns:atom", "http://www.w3.org/2005/Atom")
+    rss.set("xmlns:torznab", "http://torznab.com/schemas/2015/feed")
+
+    channel = SubElement(rss, "channel")
+    SubElement(channel, "title").text = "AnimeSonarrProxy - Movies"
+    SubElement(channel, "description").text = "Anime Movie Torznab Proxy for Radarr"
+    SubElement(channel, "link").text = f"{settings.HOST}:{settings.PORT}"
+
+    for result in results:
+        item = SubElement(channel, "item")
+
+        SubElement(item, "title").text = result.title
+        SubElement(item, "guid").text = result.guid
+        SubElement(item, "link").text = result.link
+        if result.info_url:
+            SubElement(item, "comments").text = result.info_url
+        SubElement(item, "pubDate").text = result.pub_date.strftime(
+            "%a, %d %b %Y %H:%M:%S +0000"
+        )
+
+        # Torznab attributes
+        SubElement(item, "torznab:attr", name="size", value=str(result.size))
+        SubElement(item, "torznab:attr", name="seeders", value=str(result.seeders))
+        SubElement(item, "torznab:attr", name="peers", value=str(result.peers))
+
+        # Download/upload factors
+        SubElement(item, "torznab:attr", name="downloadvolumefactor", value="1")
+        SubElement(item, "torznab:attr", name="uploadvolumefactor", value="1")
+
+        # Movie categories (2060 = Movies/Anime)
+        SubElement(item, "torznab:attr", name="category", value="2000")
+        SubElement(item, "torznab:attr", name="category", value="2060")
+
+        # Add movie metadata if available
+        if tmdb_id:
+            SubElement(item, "torznab:attr", name="tmdbid", value=str(tmdb_id))
+        if imdb_id:
+            SubElement(item, "torznab:attr", name="imdbid", value=imdb_id)
+        if year:
+            SubElement(item, "torznab:attr", name="year", value=str(year))
+
+        # Enclosure (download link)
         SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
 
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(
