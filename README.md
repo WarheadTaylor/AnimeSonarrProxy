@@ -4,16 +4,17 @@
 [![GitHub release](https://img.shields.io/github/v/release/WarheadTaylor/AnimeSonarrProxy)](https://github.com/WarheadTaylor/AnimeSonarrProxy/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anime search results. It translates Sonarr's TVDB-based queries into anime-friendly searches using title mappings and absolute episode numbering.
+A Torznab-compatible proxy that sits between Sonarr/Radarr and anime indexers (Nyaa/Prowlarr) to improve anime search results. It translates TVDB/TMDB-based queries into anime-friendly searches using title mappings and absolute episode numbering.
 
 ## Features
 
-- **🎯 Smart Title Mapping**: Translates TVDB IDs to AniDB/AniList/MAL with multiple title variants (English, Romaji, Native, Synonyms)
+- **🎯 Smart Title Mapping**: Translates TVDB/TMDB IDs to AniDB/AniList/MAL with multiple title variants (English, Romaji, Native, Synonyms)
+- **🎬 Radarr Support**: Full support for anime movies via TMDB ID lookup
 - **📊 TheXEM Integration**: Uses TheXEM.info for accurate TVDB → AniDB episode number mappings
-- **🔗 Sonarr API Integration**: Optional direct Sonarr integration for accurate episode metadata lookup (distinguishes regular episodes from specials)
+- **🔗 Sonarr/Radarr API Integration**: Optional direct integration for accurate metadata lookup
 - **🌐 Romaji-First Searches**: Prioritizes romaji titles for better search accuracy on anime indexers
 - **🔍 Multi-Query Search**: Sends separate queries for each title variant to maximize search results
-- **🎨 Web Management Interface**: Easy-to-use WebUI for managing mappings and overrides
+- **🎨 Web Management Interface**: Easy-to-use WebUI for managing TV and movie mappings
 - **💾 Multiple Data Sources**: Uses TheXEM + anime-offline-database (offline) with AniList API fallback
 - **🔄 Smart Caching**: Reduces API calls with JSON-based caching system
 - **🐳 Docker Ready**: Includes Docker and Unraid deployment options
@@ -22,16 +23,21 @@ A Torznab-compatible proxy that sits between Sonarr and Prowlarr to improve anim
 ## Architecture
 
 ```
-Sonarr → AnimeSonarrProxy (Torznab API) → Prowlarr → Nyaa
-   ↑           ↓
-   └───────────┤ (optional episode metadata lookup)
-               ↓
-    TheXEM.info (episode mapping)
-    anime-offline-database (titles + IDs)
-    AniList API (fallback enrichment)
-               ↓
-          WebUI (mapping management)
+Sonarr ──┬──→ AnimeSonarrProxy (Torznab API) → Prowlarr/Nyaa
+         │           ↓
+Radarr ──┘    ┌──────┴──────┐
+              ↓             ↓
+    TheXEM.info      anime-offline-database
+    (episode map)    (TVDB/TMDB → titles)
+              ↓             ↓
+         AniList API ←──────┘
+         (enrichment)
+              ↓
+      WebUI (TV + Movie mappings)
 ```
+
+**TV Series (Sonarr)**: TVDB ID → anime titles → episode translation → search
+**Movies (Radarr)**: TMDB ID → anime titles → search with movie keywords
 
 ## Quick Start
 
@@ -119,6 +125,9 @@ Edit `.env` file or set environment variables:
 | `PORT` | Port to listen on | `8000` |
 | `SONARR_URL` | Sonarr URL for episode metadata lookup | *(not set)* |
 | `SONARR_API_KEY` | Sonarr API key | *(not set)* |
+| `RADARR_URL` | Radarr URL for movie metadata lookup | *(not set)* |
+| `RADARR_API_KEY` | Radarr API key | *(not set)* |
+| `ENABLE_MOVIE_SEARCH` | Enable anime movie search support | `true` |
 | `DATA_DIR` | Directory for data storage | `/app/data` |
 | `ANIME_DB_UPDATE_INTERVAL` | Seconds between database updates | `86400` (24h) |
 | `CACHE_TTL` | Cache TTL in seconds | `3600` (1h) |
@@ -149,6 +158,37 @@ Without this integration, the proxy defaults to treating numeric queries as abso
    - **API Key**: The API key from your `.env` file
    - **Categories**: `5070` (TV/Anime)
 4. Click **Test** then **Save**
+
+## Radarr Setup
+
+1. Go to **Settings → Indexers**
+2. Click **Add Indexer → Torznab → Custom**
+3. Configure:
+   - **Name**: `AnimeSonarrProxy Movies`
+   - **Enable RSS**: ✅
+   - **Enable Automatic Search**: ✅
+   - **Enable Interactive Search**: ✅
+   - **URL**: `http://your-server-ip:8000`
+   - **API Path**: `/api`
+   - **API Key**: The API key from your `.env` file
+   - **Categories**: `2000,2060` (Movies, Movies/Anime)
+4. Click **Test** then **Save**
+
+### How Radarr Integration Works
+
+When Radarr searches for an anime movie:
+
+1. **TMDB ID Lookup**: Radarr sends `GET /api?t=movie&tmdbid=916224`
+2. **Title Resolution**: Proxy looks up TMDB ID in anime-offline-database
+3. **Title Extraction**: Gets titles like "Suzume no Tojimari", "Suzume"
+4. **Search Queries**: Searches Nyaa with movie keywords (e.g., `"Suzume" movie`)
+5. **Results**: Returns Torznab-compliant results to Radarr
+
+Supported parameters:
+- `tmdbid` - TMDB ID (primary, Radarr's default)
+- `imdbid` - IMDb ID (fallback)
+- `q` - Title query (fallback)
+- `year` - Release year filter
 
 ## Prowlarr Setup
 
@@ -234,24 +274,37 @@ Converts results to Torznab XML format with proper metadata.
 
 ## API Endpoints
 
-### Torznab API (for Sonarr)
+### Torznab API (for Sonarr/Radarr)
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api?t=caps` | Capabilities |
-| `GET /api?t=tvsearch&tvdbid=X&season=Y&ep=Z` | TV search |
+| `GET /api?t=caps` | Capabilities (TV + Movie support) |
+| `GET /api?t=tvsearch&tvdbid=X&season=Y&ep=Z` | TV search (Sonarr) |
+| `GET /api?t=movie&tmdbid=X` | Movie search by TMDB ID (Radarr) |
+| `GET /api?t=movie&imdbid=X` | Movie search by IMDb ID (Radarr) |
+| `GET /api?t=movie&q=query` | Movie search by title (Radarr) |
 | `GET /api?t=search&q=query` | Generic search |
 
-### WebUI API
+### WebUI API - TV Series
 
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | WebUI home page |
-| `GET /api/mappings` | Get all cached mappings |
-| `GET /api/mappings/{tvdb_id}` | Get specific mapping |
-| `POST /api/mappings/override` | Create/update override |
-| `DELETE /api/mappings/override/{tvdb_id}` | Delete override |
+| `GET /api/mappings` | Get all cached TV mappings |
+| `GET /api/mappings/{tvdb_id}` | Get specific TV mapping |
+| `POST /api/mappings/override` | Create/update TV override |
+| `DELETE /api/mappings/override/{tvdb_id}` | Delete TV override |
 | `GET /api/stats` | Get statistics |
+
+### WebUI API - Movies
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/movies/mappings` | Get all cached movie mappings |
+| `GET /api/movies/mappings/{tmdb_id}` | Get specific movie mapping |
+| `POST /api/movies/mappings/override` | Create/update movie override |
+| `DELETE /api/movies/mappings/override/{tmdb_id}` | Delete movie override |
+| `GET /api/movies/overrides` | Get all movie overrides |
 
 ## Data Files
 
@@ -259,17 +312,21 @@ All data is stored in the `DATA_DIR` (default: `/app/data`):
 
 ```
 data/
-├── anime-offline-database.json   # Downloaded anime database
-├── mappings.json                 # Cached TVDB → AniDB/AniList mappings
+├── anime-offline-database.json   # Downloaded anime database (TVDB + TMDB indexed)
+├── mappings.json                 # Cached TVDB → AniDB/AniList TV mappings
+├── movie_mappings.json           # Cached TMDB → AniDB/AniList movie mappings
 ├── thexem_cache.json            # TheXEM episode mapping cache
-└── overrides.json               # User-defined overrides
+├── overrides.json               # User-defined TV overrides
+└── movie_overrides.json         # User-defined movie overrides
 ```
 
 ### Backup
 These files should be backed up to preserve your mappings:
-- `mappings.json`
+- `mappings.json` (TV series)
+- `movie_mappings.json` (Movies)
 - `thexem_cache.json`
-- `overrides.json`
+- `overrides.json` (TV overrides)
+- `movie_overrides.json` (Movie overrides)
 
 ## Troubleshooting
 
@@ -348,20 +405,24 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 AnimeSonarrProxy/
 ├── app/
 │   ├── api/
-│   │   ├── torznab.py          # Torznab API endpoints
-│   │   └── webui.py            # WebUI API endpoints
+│   │   ├── torznab.py          # Torznab API endpoints (TV + Movie)
+│   │   └── webui.py            # WebUI API endpoints (TV + Movie)
 │   ├── services/
 │   │   ├── thexem.py           # TheXEM.info API client
-│   │   ├── anime_db.py         # anime-offline-database handler
+│   │   ├── anime_db.py         # anime-offline-database handler (TVDB + TMDB)
 │   │   ├── anilist.py          # AniList API client
 │   │   ├── sonarr.py           # Sonarr API client (episode metadata)
-│   │   ├── mapping.py          # Mapping service
+│   │   ├── radarr.py           # Radarr API client (movie metadata)
+│   │   ├── mapping.py          # TV mapping service
+│   │   ├── movie_mapping.py    # Movie mapping service
 │   │   ├── episode.py          # Episode translation
 │   │   ├── prowlarr.py         # Prowlarr client
-│   │   └── query.py            # Query builder & deduplication
-│   ├── static/                 # WebUI assets
+│   │   ├── nyaa.py             # Nyaa.si direct client
+│   │   ├── query.py            # TV query builder & deduplication
+│   │   └── movie_query.py      # Movie query builder & deduplication
+│   ├── static/                 # WebUI assets (tabbed TV/Movies UI)
 │   ├── config.py               # Configuration
-│   ├── models.py               # Pydantic models
+│   ├── models.py               # Pydantic models (TV + Movie)
 │   └── main.py                 # FastAPI application
 ├── data/                       # Data directory
 ├── Dockerfile
@@ -408,7 +469,8 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## Roadmap
 
-- [ ] Season/episode override management in WebUI
+- [x] Radarr support for anime movies (TMDB ID lookup)
+- [x] Season/episode override management in WebUI
 - [ ] Batch release detection and filtering
 - [ ] Preferred subgroup configuration
 - [ ] Release quality filtering
