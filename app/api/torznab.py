@@ -536,10 +536,10 @@ async def handle_search(
 
         # For specials, search with OVA/Special/Movie keywords
         if is_special:
-            logger.info(f"Special detected - searching with OVA/Special/Movie keywords")
+            logger.info(f"Special detected - searching with OVA/Special/OAD/Movie keywords")
 
             search_client = get_search_client()
-            special_keywords = ["OVA", "Special", "Movie"]
+            special_keywords = ["OVA", "Special", "OAD", "Movie"]
 
             # Use combined query if Nyaa client supports it
             if hasattr(search_client, "search_multi"):
@@ -559,6 +559,7 @@ async def handle_search(
                 special_queries = [
                     f"{base_query} OVA",
                     f"{base_query} Special",
+                    f"{base_query} OAD",
                     f"{base_query} Movie",
                     base_query,
                 ]
