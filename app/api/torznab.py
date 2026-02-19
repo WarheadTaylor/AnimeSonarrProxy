@@ -59,7 +59,7 @@ async def torznab_api(
 
     # Validate API key for all other requests
     if apikey != settings.API_KEY:
-        logger.debug(f"Invalid API key attempt: {apikey}")
+        logger.debug("Invalid API key attempt")
         raise HTTPException(status_code=403, detail="Invalid API key")
 
     # Handle TV search (main use case)
