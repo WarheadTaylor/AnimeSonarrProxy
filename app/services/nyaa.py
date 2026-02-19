@@ -278,7 +278,7 @@ class NyaaClient:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                logger.info(f"Nyaa RSS request: GET {url}")
+                logger.info("Nyaa RSS request initiated")
 
                 response = await self._rate_limited_request(client, url)
 
