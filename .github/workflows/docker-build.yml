@@ -1,14 +1,17 @@
 name: Build and Push Docker Image
 
 on:
+  workflow_dispatch:
   push:
     branches:
+      - beta
       - main
       - master
     tags:
       - 'v*.*.*'
   pull_request:
     branches:
+      - beta
       - main
       - master
 
