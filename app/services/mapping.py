@@ -8,6 +8,7 @@ from datetime import datetime
 
 from app.config import settings
 from app.models import AnimeMapping, AnimeTitle, MappingOverride
+from app.services.anibridge import anibridge_mappings
 from app.services.anime_db import anime_db
 from app.services.anilist import anilist_client
 from app.services.thexem import thexem_client
@@ -108,11 +109,22 @@ class MappingService:
                 logger.debug(f"Using cached mapping for TVDB {tvdb_id}")
                 return cached
 
+        anibridge_ids = anibridge_mappings.get_ids_by_tvdb_scope(tvdb_id, season=1)
+
         # Try anime-offline-database
         anime = anime_db.get_by_tvdb_id(tvdb_id)
         if anime:
             logger.info(f"Found mapping in anime-offline-database for TVDB {tvdb_id}")
-            mapping = await self._create_mapping_from_anime_db(tvdb_id, anime)
+            mapping = await self._create_mapping_from_anime_db(
+                tvdb_id, anime, anibridge_ids
+            )
+            if mapping:
+                await self._cache_mapping(mapping)
+                return mapping
+
+        if anibridge_ids:
+            logger.info(f"Found AniBridge IDs for TVDB {tvdb_id}: {anibridge_ids}")
+            mapping = await self._create_mapping_from_anibridge(tvdb_id, anibridge_ids)
             if mapping:
                 await self._cache_mapping(mapping)
                 return mapping
@@ -130,11 +142,14 @@ class MappingService:
         return None
 
     async def _create_mapping_from_anime_db(
-        self, tvdb_id: int, anime: Dict
+        self, tvdb_id: int, anime: Dict, anibridge_ids: Optional[Dict[str, int]] = None
     ) -> Optional[AnimeMapping]:
         """Create AnimeMapping from anime-offline-database entry."""
         ids = anime_db.extract_ids(anime)
         titles = anime_db.extract_titles(anime)
+
+        if anibridge_ids:
+            ids.update({key: value for key, value in anibridge_ids.items() if value})
 
         # Try to enrich with AniList data if we have AniList ID
         total_episodes = 0
@@ -148,6 +163,48 @@ class MappingService:
                     total_episodes = anilist_client.get_episode_count(anilist_data)
             except Exception as e:
                 logger.warning(f"Failed to enrich with AniList data: {e}")
+
+        return AnimeMapping(
+            tvdb_id=tvdb_id,
+            anidb_id=ids.get("anidb_id"),
+            anilist_id=ids.get("anilist_id"),
+            mal_id=ids.get("mal_id"),
+            titles=titles,
+            total_episodes=total_episodes,
+            season_info=[],
+            user_override=False,
+        )
+
+    async def _create_mapping_from_anibridge(
+        self, tvdb_id: int, ids: Dict[str, int]
+    ) -> Optional[AnimeMapping]:
+        """Create AnimeMapping from AniBridge-linked IDs."""
+        titles = AnimeTitle(synonyms=[])
+        total_episodes = 0
+
+        if ids.get("anilist_id"):
+            try:
+                anilist_data = await anilist_client.get_by_anilist_id(ids["anilist_id"])
+                if anilist_data:
+                    titles = anilist_client.extract_titles(anilist_data)
+                    total_episodes = anilist_client.get_episode_count(anilist_data)
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to enrich AniBridge mapping with AniList: {exc}"
+                )
+
+        if not any([titles.romaji, titles.english, titles.native, titles.synonyms]):
+            xem_names = await thexem_client.get_names_by_tvdb_id(tvdb_id)
+            if xem_names:
+                titles = AnimeTitle(
+                    romaji=xem_names[0],
+                    english=None,
+                    native=None,
+                    synonyms=xem_names[1:],
+                )
+
+        if not any([titles.romaji, titles.english, titles.native, titles.synonyms]):
+            return None
 
         return AnimeMapping(
             tvdb_id=tvdb_id,

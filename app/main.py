@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api import torznab, webui
+from app.services.anibridge import anibridge_mappings
 from app.services.anime_db import anime_db
 from app.services.mapping import mapping_service
 from app.services.movie_mapping import movie_mapping_service
@@ -36,6 +37,10 @@ async def lifespan(app: FastAPI):
     # Initialize anime-offline-database
     logger.info("Initializing anime-offline-database...")
     await anime_db.initialize()
+
+    # Initialize AniBridge mappings
+    logger.info("Initializing AniBridge mappings...")
+    await anibridge_mappings.initialize()
 
     # Initialize mapping service
     logger.info("Initializing mapping service...")

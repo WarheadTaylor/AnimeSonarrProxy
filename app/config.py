@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     DATA_DIR: Path = Path("/app/data")
     ANIME_DB_URL: str = "https://github.com/manami-project/anime-offline-database/releases/latest/download/anime-offline-database-minified.json"
     ANIME_DB_UPDATE_INTERVAL: int = 86400  # 24 hours in seconds
+    ANIBRIDGE_MAPPINGS_URL: str = "https://github.com/anibridge/anibridge-mappings/releases/download/v3/mappings.json"
+    ANIBRIDGE_UPDATE_INTERVAL: int = 86400  # 24 hours in seconds
 
     # Cache Settings
     CACHE_TTL: int = 3600  # 1 hour

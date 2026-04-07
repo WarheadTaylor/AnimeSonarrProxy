@@ -1,7 +1,11 @@
 """Episode number translation between seasonal and absolute numbering."""
+
 import logging
-from typing import Optional, Dict
-from app.models import AnimeMapping, MappingOverride
+
+from typing import Optional
+
+from app.models import AnimeMapping
+from app.services.anibridge import anibridge_mappings
 from app.services.thexem import thexem_client
 
 logger = logging.getLogger(__name__)
@@ -15,19 +19,17 @@ class EpisodeTranslator:
         self.thexem = thexem_client
 
     async def to_absolute(
-        self,
-        mapping: AnimeMapping,
-        season: int,
-        episode: int
+        self, mapping: AnimeMapping, season: int, episode: int
     ) -> Optional[int]:
         """
         Convert season/episode to absolute episode number.
 
         Priority:
         1. User override
-        2. TheXEM mapping (TVDB -> AniDB)
-        3. season_info metadata
-        4. Fallback calculation
+        2. AniBridge mapping (TVDB -> AniDB)
+        3. TheXEM mapping (TVDB -> AniDB)
+        4. season_info metadata
+        5. Fallback calculation
 
         Args:
             mapping: The anime mapping with season info
@@ -47,22 +49,37 @@ class EpisodeTranslator:
                     logger.info(f"Using override: {override_key} -> {absolute}")
                     return absolute
 
-        # Try TheXEM first - most accurate source for anime
+        anibridge_absolute = anibridge_mappings.map_tvdb_episode(
+            mapping.tvdb_id,
+            season,
+            episode,
+            target_provider="anidb",
+        )
+        if anibridge_absolute:
+            logger.info(
+                f"Using AniBridge mapping for TVDB {mapping.tvdb_id} "
+                f"S{season:02d}E{episode:02d} -> {anibridge_absolute}"
+            )
+            return anibridge_absolute
+
+        # Try TheXEM next
         try:
             xem_absolute = await self.thexem.tvdb_to_anidb_episode(
-                mapping.tvdb_id,
-                season,
-                episode
+                mapping.tvdb_id, season, episode
             )
             if xem_absolute:
-                logger.info(f"Using TheXEM mapping for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d} -> {xem_absolute}")
+                logger.info(
+                    f"Using TheXEM mapping for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d} -> {xem_absolute}"
+                )
                 return xem_absolute
         except Exception as e:
             logger.warning(f"TheXEM lookup failed: {e}")
 
         # If we have season_info, use it
         if mapping.season_info:
-            absolute = self._calculate_from_season_info(mapping.season_info, season, episode)
+            absolute = self._calculate_from_season_info(
+                mapping.season_info, season, episode
+            )
             if absolute:
                 return absolute
 
@@ -73,28 +90,29 @@ class EpisodeTranslator:
         elif mapping.total_episodes > 0:
             # Try to estimate based on total episodes
             # This is a simplification - in reality we'd need more metadata
-            logger.warning(f"Using simplified calculation for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d}")
+            logger.warning(
+                f"Using simplified calculation for TVDB {mapping.tvdb_id} S{season:02d}E{episode:02d}"
+            )
             # Assume 12-13 episodes per season (common anime pattern)
             estimated_eps_per_season = 12
             absolute = ((season - 1) * estimated_eps_per_season) + episode
             return absolute
         else:
             # No season info and no total episodes - just try the episode number
-            logger.warning(f"No season info available for TVDB {mapping.tvdb_id}, using episode as absolute")
+            logger.warning(
+                f"No season info available for TVDB {mapping.tvdb_id}, using episode as absolute"
+            )
             return episode
 
     def _calculate_from_season_info(
-        self,
-        season_info: list,
-        target_season: int,
-        target_episode: int
+        self, season_info: list, target_season: int, target_episode: int
     ) -> Optional[int]:
         """Calculate absolute episode from season info list."""
         absolute = 0
 
-        for season_data in sorted(season_info, key=lambda x: x.get('season', 0)):
-            season_num = season_data.get('season', 0)
-            episode_count = season_data.get('episodes', 0)
+        for season_data in sorted(season_info, key=lambda x: x.get("season", 0)):
+            season_num = season_data.get("season", 0)
+            episode_count = season_data.get("episodes", 0)
 
             if season_num < target_season:
                 # Add all episodes from previous seasons
