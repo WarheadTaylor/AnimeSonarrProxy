@@ -6,8 +6,9 @@ This project uses GitHub Actions to automatically build and push Docker images t
 
 The workflow (`.github/workflows/docker-build.yml`) automatically builds and pushes images when:
 
-- **Push to main/master branch** → Tagged as `latest`
-- **Push a tag like `v1.0.0`** → Tagged as `v1.0.0`, `1.0`, `1`, and `latest`
+- **Push to `main` branch** → Tagged as `main` and `latest`
+- **Push to `beta` branch** → Tagged as `beta`
+- **Push a tag like `v1.0.0`** → Tagged as `v1.0.0`, `1.0`, and `1`
 - **Pull Request** → Builds but doesn't push (testing only)
 
 ## Image Tags
@@ -15,11 +16,13 @@ The workflow (`.github/workflows/docker-build.yml`) automatically builds and pus
 Images are available at: `ghcr.io/warheadtaylor/animesonarrproxy`
 
 Available tags:
+- `main` - Stable branch build
+- `beta` - Beta branch build
 - `latest` - Latest stable build from main branch
 - `v1.0.0` - Specific version tags (semver)
 - `1.0` - Major.minor version
 - `1` - Major version only
-- `main-abc1234` - Specific commit SHA on main branch
+- `sha-abc1234` - Specific commit SHA for a build
 
 ## Using the Pre-built Image
 
