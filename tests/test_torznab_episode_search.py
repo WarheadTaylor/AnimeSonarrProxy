@@ -3,6 +3,9 @@
 from datetime import datetime
 from xml.etree import ElementTree as ET
 
+import pytest
+
+from app.api import torznab
 from app.api.torznab import create_torznab_rss
 from app.models import SearchResult
 from app.services.query import query_service
@@ -67,3 +70,30 @@ def test_torznab_rss_includes_episode_and_language_metadata() -> None:
     assert attrs["season"] == "23"
     assert attrs["episode"] == "1"
     assert attrs["language"] == "English"
+
+
+@pytest.mark.asyncio
+async def test_generic_search_filters_trailing_episode_number(monkeypatch) -> None:
+    """Generic searches like 'One Piece 1156' should drop title-only leaks."""
+
+    class FakeSearchClient:
+        async def search(self, query: str, limit: int = 100):
+            return [
+                _result(
+                    "One Piece: Baron Omatsuri and the Secret Island (2005) "
+                    "[BD Remux 1080p AVC TrueHD 5.1]"
+                ),
+                _result("[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv"),
+                _result("[ToonsHub] One Piece EP1156 1080p WEB-DL AAC2.0 H.264"),
+            ]
+
+    monkeypatch.setattr(torznab, "get_search_client", lambda: FakeSearchClient())
+
+    response = await torznab.handle_search("One Piece 1156", limit=100, offset=0)
+    root = ET.fromstring(response.body.decode("utf-8"))
+    titles = [element.text for element in root.findall(".//item/title")]
+
+    assert titles == [
+        "[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv",
+        "[ToonsHub] One Piece EP1156 1080p WEB-DL AAC2.0 H.264",
+    ]

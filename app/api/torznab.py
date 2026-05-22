@@ -639,6 +639,17 @@ async def handle_search(
                 f"Relevance filter: {len(results)} -> {len(relevant_results)} results"
             )
 
+            episode_num = _extract_trailing_episode_number(query)
+            if episode_num is not None:
+                episode_results = query_service.filter_by_episode_numbers(
+                    relevant_results, [episode_num]
+                )
+                if len(episode_results) != len(relevant_results):
+                    logger.info(
+                        f"Generic episode filter: {len(relevant_results)} -> {len(episode_results)} results"
+                    )
+                relevant_results = episode_results
+
             # Sort by seeders (descending) then pub_date (descending, newer first)
             relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
             paginated_results = relevant_results[offset : offset + limit]
@@ -649,6 +660,19 @@ async def handle_search(
     except Exception as e:
         logger.error(f"Generic search failed: {e}", exc_info=True)
         return create_empty_rss()
+
+
+def _extract_trailing_episode_number(query: str) -> Optional[int]:
+    """Extract a trailing absolute episode number from a generic title query."""
+    match = re.search(r"(?:^|\s)(\d{1,5})\s*$", query or "")
+    if not match:
+        return None
+
+    episode_num = int(match.group(1))
+    if episode_num <= 0:
+        return None
+
+    return episode_num
 
 
 def _parse_concatenated_query(query: str) -> list[str]:
