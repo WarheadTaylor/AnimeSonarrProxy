@@ -32,6 +32,13 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting AnimeSonarrProxy...")
+    logger.info(
+        "Beta Sonarr title normalizer: %s",
+        "enabled" if settings.SONARR_TITLE_NORMALIZER_ENABLED else "disabled",
+    )
+    logger.info(
+        f"Torznab default language metadata: {settings.TORZNAB_DEFAULT_LANGUAGE or 'disabled'}"
+    )
 
     # Initialize anime-offline-database
     logger.info("Initializing anime-offline-database...")

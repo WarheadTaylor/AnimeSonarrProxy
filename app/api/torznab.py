@@ -788,15 +788,23 @@ def _normalize_result_titles_for_sonarr(
     Sonarr makes release decisions from the RSS title parser. Torznab metadata like
     season and episode is useful context, but title parsing still drives matching.
     """
-    if (
-        not settings.SONARR_TITLE_NORMALIZER_ENABLED
-        or season is None
-        or episode is None
-        or not series_title
-    ):
+    if not settings.SONARR_TITLE_NORMALIZER_ENABLED:
+        logger.info(
+            f"Sonarr title normalizer skipped: disabled "
+            f"(results={len(results)}, series='{series_title}', season={season}, episode={episode})"
+        )
+        return results
+
+    if season is None or episode is None or not series_title:
+        logger.info(
+            f"Sonarr title normalizer skipped: missing metadata "
+            f"(results={len(results)}, series='{series_title}', season={season}, episode={episode})"
+        )
         return results
 
     normalized = []
+    changed_count = 0
+    sample_changes = []
     for result in results:
         normalized_title = _build_sonarr_release_title(
             original_title=result.title,
@@ -806,10 +814,17 @@ def _normalize_result_titles_for_sonarr(
             absolute_episode=absolute_episode,
         )
         if normalized_title != result.title:
-            logger.debug(
-                f"Normalized release title for Sonarr: '{result.title}' -> '{normalized_title}'"
-            )
+            changed_count += 1
+            if len(sample_changes) < 3:
+                sample_changes.append(f"'{result.title}' -> '{normalized_title}'")
         normalized.append(result.model_copy(update={"title": normalized_title}))
+
+    logger.info(
+        f"Sonarr title normalizer applied: {changed_count}/{len(results)} titles rewritten "
+        f"(series='{series_title}', S{season:02d}E{episode:02d}, absolute={absolute_episode})"
+    )
+    for sample_change in sample_changes:
+        logger.info(f"Sonarr title normalizer sample: {sample_change}")
 
     return normalized
 
