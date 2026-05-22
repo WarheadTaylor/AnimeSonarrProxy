@@ -782,13 +782,20 @@ async def handle_search(
                     )
                 relevant_results = episode_results
 
-            rss_results = _normalize_result_titles_for_sonarr(
-                relevant_results,
-                series_title=base_query,
-                season=season,
-                episode=episode,
-                absolute_episode=episode_num,
-            )
+            if episode_num is not None:
+                rss_results = _normalize_result_titles_for_sonarr(
+                    relevant_results,
+                    series_title=_strip_trailing_episode_number(query),
+                    season=season,
+                    episode=episode,
+                    absolute_episode=episode_num,
+                )
+            else:
+                logger.info(
+                    "Sonarr title normalizer skipped: generic search lacks absolute episode number "
+                    f"(query='{query}', season={season}, episode={episode})"
+                )
+                rss_results = relevant_results
 
             # Sort by seeders (descending) then pub_date (descending, newer first)
             rss_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
@@ -815,6 +822,11 @@ def _extract_trailing_episode_number(query: str) -> Optional[int]:
         return None
 
     return episode_num
+
+
+def _strip_trailing_episode_number(query: str) -> str:
+    """Remove a trailing episode number from a generic title query."""
+    return re.sub(r"\s+\d{1,5}\s*$", "", query or "").strip()
 
 
 def _parse_concatenated_query(query: str) -> list[str]:

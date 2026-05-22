@@ -150,7 +150,35 @@ async def test_generic_tvsearch_context_enables_title_normalizer(monkeypatch) ->
     root = ET.fromstring(response.body.decode("utf-8"))
     titles = [element.text for element in root.findall(".//item/title")]
 
-    assert titles == ["[SubsPlease] One Piece 1156 - S23E01 - 1156 (1080p)"]
+    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p)"]
+
+
+@pytest.mark.asyncio
+async def test_generic_search_without_absolute_episode_does_not_normalize(
+    monkeypatch,
+) -> None:
+    """Generic title-only searches should not rewrite unrelated episodes."""
+
+    class FakeSearchClient:
+        async def search(self, query: str, limit: int = 100):
+            return [
+                _result("[SubsPlease] One Piece - 1162 (1080p) [34C9E856].mkv"),
+                _result("[SubsPlease] One Piece - 1161 (1080p) [9BEAE717].mkv"),
+            ]
+
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    monkeypatch.setattr(torznab, "get_search_client", lambda: FakeSearchClient())
+
+    response = await torznab.handle_search(
+        "One Piece", limit=100, offset=0, season=23, episode=1
+    )
+    root = ET.fromstring(response.body.decode("utf-8"))
+    titles = [element.text for element in root.findall(".//item/title")]
+
+    assert titles == [
+        "[SubsPlease] One Piece - 1162 (1080p) [34C9E856].mkv",
+        "[SubsPlease] One Piece - 1161 (1080p) [9BEAE717].mkv",
+    ]
 
 
 @pytest.mark.asyncio
