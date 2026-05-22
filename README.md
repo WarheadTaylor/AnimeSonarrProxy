@@ -134,6 +134,8 @@ Edit `.env` file or set environment variables:
 | `MAPPING_CACHE_TTL` | Mapping cache TTL in seconds | `604800` (7d) |
 | `MAX_RESULTS_PER_QUERY` | Max results per query | `100` |
 | `ENABLE_DEDUPLICATION` | Enable result deduplication | `true` |
+| `TORZNAB_DEFAULT_LANGUAGE` | Language metadata added to Torznab results; set blank to disable | `English` |
+| `SONARR_TITLE_NORMALIZER_ENABLED` | Rewrite proven episode release titles into Sonarr-friendly `SxxEyy` titles | `false` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 
 ### Sonarr Integration (Recommended)
@@ -143,6 +145,33 @@ When `SONARR_URL` and `SONARR_API_KEY` are configured, the proxy can query Sonar
 - **Specials/OVAs**: Searched with "Title OVA", "Title Special", etc.
 
 Without this integration, the proxy defaults to treating numeric queries as absolute episode numbers (which works for most anime).
+
+### Sonarr Title Normalizer
+
+`SONARR_TITLE_NORMALIZER_ENABLED` is off by default. When enabled, the proxy rewrites returned RSS titles for releases that have already been matched to a specific absolute episode into a format Sonarr's parser handles reliably, such as:
+
+```text
+[SubsPlease] One Piece - S23E01 - 1156 (1080p)
+```
+
+The original torrent download link is preserved. The normalizer only runs when the proxy has enough episode context, such as a TVDB search resolved through Sonarr metadata or a generic query with a trailing absolute episode number like `One Piece 1156`. It intentionally skips title-only searches like `One Piece` to avoid relabeling unrelated recent releases as the requested episode.
+
+Recommended settings:
+
+```env
+SONARR_URL=http://localhost:8989
+SONARR_API_KEY=your_sonarr_api_key_here
+SONARR_TITLE_NORMALIZER_ENABLED=true
+TORZNAB_DEFAULT_LANGUAGE=English
+```
+
+Useful log lines:
+
+```text
+Beta Sonarr title normalizer: enabled
+Sonarr title normalizer applied: 20/20 titles rewritten (...)
+Sonarr title normalizer skipped: generic search lacks absolute episode number (...)
+```
 
 ## Sonarr Setup
 
