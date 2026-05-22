@@ -255,15 +255,23 @@ class QueryService:
             f"Relevance filter: {len(all_results)} -> {len(relevant_results)} results"
         )
 
+        episode_results = self.filter_by_episode_numbers(
+            relevant_results, [absolute_ep]
+        )
+        if len(episode_results) != len(relevant_results):
+            logger.info(
+                f"Episode filter: {len(relevant_results)} -> {len(episode_results)} results"
+            )
+
         # Deduplicate results
         if settings.ENABLE_DEDUPLICATION:
-            deduplicated = self._deduplicate_results(relevant_results)
+            deduplicated = self._deduplicate_results(episode_results)
             logger.info(
-                f"Deduplicated {len(relevant_results)} results to {len(deduplicated)}"
+                f"Deduplicated {len(episode_results)} results to {len(deduplicated)}"
             )
             return deduplicated
         else:
-            return relevant_results
+            return episode_results
 
     def _get_search_titles(self, mapping: AnimeMapping) -> List[str]:
         """Extract and prioritize title variations for searching."""
@@ -503,6 +511,54 @@ class QueryService:
             )
 
         return relevant_results
+
+    def filter_by_episode_numbers(
+        self, results: List[SearchResult], episode_numbers: List[int]
+    ) -> List[SearchResult]:
+        """
+        Keep results that contain at least one expected absolute episode number.
+
+        If no result has an episode marker, return the original list to avoid
+        dropping all releases for unusual naming schemes.
+        """
+        expected_episodes = sorted({ep for ep in episode_numbers if ep > 0})
+        if not results or not expected_episodes:
+            return results
+
+        episode_results = [
+            result
+            for result in results
+            if any(
+                self._title_contains_episode_number(result.title, episode)
+                for episode in expected_episodes
+            )
+        ]
+
+        if not episode_results:
+            logger.warning(
+                f"Episode filter found no matches for episodes {expected_episodes}; "
+                "keeping unfiltered results"
+            )
+            return results
+
+        filtered_count = len(results) - len(episode_results)
+        if filtered_count > 0:
+            logger.info(
+                f"Filtered out {filtered_count} results without episodes {expected_episodes}"
+            )
+
+        return episode_results
+
+    def _title_contains_episode_number(self, title: str, episode_number: int) -> bool:
+        """Check whether a release title contains an absolute episode number."""
+        episode = re.escape(str(episode_number))
+        patterns = [
+            rf"(?<!\d)(?:ep|episode)\s*0*{episode}(?:v\d+)?(?!\d)",
+            rf"(?<![a-z0-9])0*{episode}(?:v\d+)?(?!\d)",
+        ]
+
+        title_lower = title.lower()
+        return any(re.search(pattern, title_lower) for pattern in patterns)
 
     def _extract_keywords(self, titles: List[str]) -> Set[str]:
         """

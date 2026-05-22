@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # Search Settings
     MAX_RESULTS_PER_QUERY: int = 100
     ENABLE_DEDUPLICATION: bool = True
+    TORZNAB_DEFAULT_LANGUAGE: Optional[str] = (
+        "English"  # Language metadata to attach to anime releases
+    )
 
     # Logging
     LOG_LEVEL: str = "INFO"

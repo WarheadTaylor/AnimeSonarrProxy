@@ -250,7 +250,19 @@ async def handle_tvsearch_special(
                     else:
                         # Search for all absolute episode numbers
                         return await _search_for_absolute_episodes(
-                            tvdb_id, titles, absolute_eps, limit, offset
+                            tvdb_id,
+                            titles,
+                            absolute_eps,
+                            limit,
+                            offset,
+                            episode_metadata={
+                                ep.absolute_episode_number: (
+                                    ep.season_number,
+                                    ep.episode_number,
+                                )
+                                for ep in wanted_episodes
+                                if ep.absolute_episode_number is not None
+                            },
                         )
 
             # Fallback: Try as absolute episode number
@@ -273,7 +285,17 @@ async def handle_tvsearch_special(
                         f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
                     )
                     return await _search_for_absolute_episodes(
-                        tvdb_id, titles, [query_num], limit, offset
+                        tvdb_id,
+                        titles,
+                        [query_num],
+                        limit,
+                        offset,
+                        episode_metadata={
+                            query_num: (
+                                episode_info.season_number,
+                                episode_info.episode_number,
+                            )
+                        },
                     )
             else:
                 # Episode not found by either method - use query as-is
@@ -345,6 +367,7 @@ async def _search_for_absolute_episodes(
     absolute_eps: list[int],
     limit: int,
     offset: int,
+    episode_metadata: Optional[dict[int, tuple[int, int]]] = None,
 ) -> Response:
     """
     Search for regular episodes using absolute episode numbers.
@@ -409,11 +432,26 @@ async def _search_for_absolute_episodes(
         f"Absolute episode search: {len(unique_results)} -> {len(relevant_results)} relevant results"
     )
 
-    # Sort by seeders (descending) then pub_date (descending)
-    relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-    paginated_results = relevant_results[offset : offset + limit]
+    episode_results = query_service.filter_by_episode_numbers(
+        relevant_results, absolute_eps
+    )
+    if len(episode_results) != len(relevant_results):
+        logger.info(
+            f"Absolute episode filter: {len(relevant_results)} -> {len(episode_results)} results"
+        )
 
-    rss_xml = create_torznab_rss(paginated_results, tvdbid=tvdb_id)
+    # Sort by seeders (descending) then pub_date (descending)
+    episode_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+    paginated_results = episode_results[offset : offset + limit]
+
+    season = None
+    episode = None
+    if episode_metadata and len(episode_metadata) == 1:
+        season, episode = next(iter(episode_metadata.values()))
+
+    rss_xml = create_torznab_rss(
+        paginated_results, tvdbid=tvdb_id, season=season, episode=episode
+    )
     return Response(content=rss_xml, media_type="application/xml")
 
 
@@ -746,6 +784,13 @@ def create_torznab_rss(
             SubElement(item, "torznab:attr", name="season", value=str(season))
         if episode is not None:
             SubElement(item, "torznab:attr", name="episode", value=str(episode))
+        if settings.TORZNAB_DEFAULT_LANGUAGE:
+            SubElement(
+                item,
+                "torznab:attr",
+                name="language",
+                value=settings.TORZNAB_DEFAULT_LANGUAGE,
+            )
 
         # Enclosure (download link) - always use the actual download URL
         SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
