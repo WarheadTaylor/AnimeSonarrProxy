@@ -7,6 +7,7 @@ import pytest
 
 from app.api import torznab
 from app.api.torznab import create_torznab_rss
+from app.config import settings
 from app.models import SearchResult
 from app.services.query import query_service
 
@@ -70,6 +71,39 @@ def test_torznab_rss_includes_episode_and_language_metadata() -> None:
     assert attrs["season"] == "23"
     assert attrs["episode"] == "1"
     assert attrs["language"] == "English"
+
+
+def test_sonarr_title_normalizer_is_opt_in(monkeypatch) -> None:
+    """Normalizer should not alter release titles unless explicitly enabled."""
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", False)
+    results = [_result("[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv")]
+
+    normalized = torznab._normalize_result_titles_for_sonarr(
+        results,
+        series_title="One Piece",
+        season=23,
+        episode=1,
+        absolute_episode=1156,
+    )
+
+    assert normalized[0].title == results[0].title
+
+
+def test_sonarr_title_normalizer_rewrites_to_canonical_episode(monkeypatch) -> None:
+    """Beta normalizer should return titles centered on Sonarr's SxxEyy parser."""
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    results = [_result("[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv")]
+
+    normalized = torznab._normalize_result_titles_for_sonarr(
+        results,
+        series_title="One Piece",
+        season=23,
+        episode=1,
+        absolute_episode=1156,
+    )
+
+    assert normalized[0].title == "[SubsPlease] One Piece - S23E01 - 1156 (1080p)"
+    assert results[0].title == "[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv"
 
 
 @pytest.mark.asyncio

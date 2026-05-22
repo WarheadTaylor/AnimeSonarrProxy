@@ -163,10 +163,18 @@ async def handle_tvsearch(
 
         # Apply limit and offset
         paginated_results = results[offset : offset + limit]
+        absolute_episode = _extract_expected_absolute_episode(results)
+        rss_results = _normalize_result_titles_for_sonarr(
+            paginated_results,
+            series_title=mapping.get_search_titles()[0],
+            season=season,
+            episode=episode,
+            absolute_episode=absolute_episode,
+        )
 
         # Convert to Torznab RSS
         rss_xml = create_torznab_rss(
-            paginated_results, tvdbid=tvdb_id, season=season, episode=episode
+            rss_results, tvdbid=tvdb_id, season=season, episode=episode
         )
 
         return Response(content=rss_xml, media_type="application/xml")
@@ -449,8 +457,16 @@ async def _search_for_absolute_episodes(
     if episode_metadata and len(episode_metadata) == 1:
         season, episode = next(iter(episode_metadata.values()))
 
+    rss_results = _normalize_result_titles_for_sonarr(
+        paginated_results,
+        series_title=primary_title,
+        season=season,
+        episode=episode,
+        absolute_episode=absolute_eps[0] if len(absolute_eps) == 1 else None,
+    )
+
     rss_xml = create_torznab_rss(
-        paginated_results, tvdbid=tvdb_id, season=season, episode=episode
+        rss_results, tvdbid=tvdb_id, season=season, episode=episode
     )
     return Response(content=rss_xml, media_type="application/xml")
 
@@ -757,6 +773,126 @@ def _strip_season_zero_suffix(query: str) -> str:
     "Attack on Titan 01" -> "Attack on Titan"
     """
     return re.sub(r"\s+0\d$", "", query).strip()
+
+
+def _normalize_result_titles_for_sonarr(
+    results: list[SearchResult],
+    series_title: str,
+    season: Optional[int],
+    episode: Optional[int],
+    absolute_episode: Optional[int] = None,
+) -> list[SearchResult]:
+    """
+    Rewrite release titles into a Sonarr-friendly SxxEyy format for beta testing.
+
+    Sonarr makes release decisions from the RSS title parser. Torznab metadata like
+    season and episode is useful context, but title parsing still drives matching.
+    """
+    if (
+        not settings.SONARR_TITLE_NORMALIZER_ENABLED
+        or season is None
+        or episode is None
+        or not series_title
+    ):
+        return results
+
+    normalized = []
+    for result in results:
+        normalized_title = _build_sonarr_release_title(
+            original_title=result.title,
+            series_title=series_title,
+            season=season,
+            episode=episode,
+            absolute_episode=absolute_episode,
+        )
+        if normalized_title != result.title:
+            logger.debug(
+                f"Normalized release title for Sonarr: '{result.title}' -> '{normalized_title}'"
+            )
+        normalized.append(result.model_copy(update={"title": normalized_title}))
+
+    return normalized
+
+
+def _build_sonarr_release_title(
+    original_title: str,
+    series_title: str,
+    season: int,
+    episode: int,
+    absolute_episode: Optional[int] = None,
+) -> str:
+    """Build a canonical release title that Sonarr's parser should recognize."""
+    release_group = _extract_release_group(original_title)
+    quality = _extract_quality_tag(original_title)
+    revision = _extract_revision_tag(original_title)
+
+    title_parts = [f"{series_title} - S{season:02d}E{episode:02d}"]
+    if absolute_episode:
+        title_parts.append(str(absolute_episode))
+
+    normalized_title = " - ".join(title_parts)
+    if revision:
+        normalized_title = f"{normalized_title}{revision}"
+    if quality:
+        normalized_title = f"{normalized_title} ({quality})"
+    if release_group:
+        normalized_title = f"[{release_group}] {normalized_title}"
+
+    return normalized_title
+
+
+def _extract_release_group(title: str) -> Optional[str]:
+    """Extract a leading release group from a release title."""
+    match = re.match(r"^\[([^\]]+)\]\s+", title or "")
+    if not match:
+        return None
+
+    return match.group(1).strip()
+
+
+def _extract_quality_tag(title: str) -> Optional[str]:
+    """Extract compact quality metadata for normalized release titles."""
+    parts = []
+
+    resolution = re.search(r"\b(2160p|1080p|720p|480p)\b", title or "", re.IGNORECASE)
+    if resolution:
+        parts.append(resolution.group(1))
+
+    source = re.search(
+        r"\b(BD\s*Remux|BluRay|BDRip|WEB[-\s]?DL|WEBRip|HDTV|SDTV)\b",
+        title or "",
+        re.IGNORECASE,
+    )
+    if source:
+        parts.append(re.sub(r"\s+", " ", source.group(1)).replace(" ", "-"))
+
+    if not parts:
+        return None
+
+    return " ".join(dict.fromkeys(parts))
+
+
+def _extract_revision_tag(title: str) -> str:
+    """Extract v2-style release revision suffixes."""
+    match = re.search(r"(?<![a-z0-9])(v\d+)(?![a-z0-9])", title or "", re.IGNORECASE)
+    if not match:
+        return ""
+
+    return match.group(1).lower()
+
+
+def _extract_expected_absolute_episode(results: list[SearchResult]) -> Optional[int]:
+    """Infer an absolute episode number from already-filtered result titles."""
+    for result in results:
+        match = re.search(
+            r"(?<!\d)(?:ep|episode)?\s*(\d{3,5})(?:v\d+)?(?!\d)",
+            result.title,
+            re.IGNORECASE,
+        )
+        if match:
+            return int(match.group(1))
+
+    return None
 
 
 def create_torznab_rss(

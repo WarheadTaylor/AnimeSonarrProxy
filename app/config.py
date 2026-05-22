@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     TORZNAB_DEFAULT_LANGUAGE: Optional[str] = (
         "English"  # Language metadata to attach to anime releases
     )
+    SONARR_TITLE_NORMALIZER_ENABLED: bool = False
 
     # Logging
     LOG_LEVEL: str = "INFO"
