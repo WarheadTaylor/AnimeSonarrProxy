@@ -8,7 +8,7 @@ import pytest
 from app.api import torznab
 from app.api.torznab import create_torznab_rss
 from app.config import settings
-from app.models import SearchResult
+from app.models import EpisodeInfo, SearchResult
 from app.services.query import query_service
 
 
@@ -131,3 +131,63 @@ async def test_generic_search_filters_trailing_episode_number(monkeypatch) -> No
         "[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv",
         "[ToonsHub] One Piece EP1156 1080p WEB-DL AAC2.0 H.264",
     ]
+
+
+@pytest.mark.asyncio
+async def test_generic_tvsearch_context_enables_title_normalizer(monkeypatch) -> None:
+    """A no-TVDB tvsearch with season/episode should still normalize titles."""
+
+    class FakeSearchClient:
+        async def search(self, query: str, limit: int = 100):
+            return [_result("[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv")]
+
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    monkeypatch.setattr(torznab, "get_search_client", lambda: FakeSearchClient())
+
+    response = await torznab.handle_search(
+        "One Piece 1156", limit=100, offset=0, season=23, episode=1
+    )
+    root = ET.fromstring(response.body.decode("utf-8"))
+    titles = [element.text for element in root.findall(".//item/title")]
+
+    assert titles == ["[SubsPlease] One Piece 1156 - S23E01 - 1156 (1080p)"]
+
+
+@pytest.mark.asyncio
+async def test_tvsearch_uses_sonarr_metadata_when_mapping_missing(monkeypatch) -> None:
+    """A TVDB search without local mapping should fall back to Sonarr metadata."""
+
+    class FakeSearchClient:
+        async def search_multi(self, titles, episodes=None, keywords=None, limit=100):
+            return [_result("[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv")]
+
+    async def fake_get_mapping(tvdb_id: int):
+        return None
+
+    async def fake_get_episode_by_season_episode(
+        tvdb_id: int, season: int, episode: int
+    ):
+        return EpisodeInfo(
+            series_id=1,
+            series_title="One Piece",
+            season_number=23,
+            episode_number=1,
+            absolute_episode_number=1156,
+            title="The Long-sought Elbaph! The Big Reunion Banquet",
+        )
+
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    monkeypatch.setattr(torznab.mapping_service, "get_mapping", fake_get_mapping)
+    monkeypatch.setattr(torznab.sonarr_client, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        torznab.sonarr_client,
+        "get_episode_by_season_episode",
+        fake_get_episode_by_season_episode,
+    )
+    monkeypatch.setattr(torznab, "get_search_client", lambda: FakeSearchClient())
+
+    response = await torznab.handle_tvsearch(81797, 23, 1, limit=100, offset=0)
+    root = ET.fromstring(response.body.decode("utf-8"))
+    titles = [element.text for element in root.findall(".//item/title")]
+
+    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p)"]

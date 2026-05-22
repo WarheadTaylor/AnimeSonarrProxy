@@ -72,7 +72,14 @@ async def torznab_api(
                 logger.info(
                     f"tvsearch called without tvdbid, falling back to generic search with query: {q}{' [SPECIAL]' if is_special else ''}"
                 )
-                return await handle_search(q, limit, offset, is_special=is_special)
+                return await handle_search(
+                    q,
+                    limit,
+                    offset,
+                    is_special=is_special,
+                    season=season,
+                    episode=ep,
+                )
             else:
                 # Sonarr may call tvsearch without parameters during indexer testing
                 # Return recent anime results to pass the test
@@ -150,9 +157,12 @@ async def handle_tvsearch(
     mapping = await mapping_service.get_mapping(tvdb_id)
 
     if mapping is None:
-        logger.warning(f"No mapping found for TVDB {tvdb_id} - returning empty results")
-        # TODO: Track this for WebUI to show unmapped series
-        return create_empty_rss()
+        logger.warning(
+            f"No mapping found for TVDB {tvdb_id}; trying Sonarr metadata fallback"
+        )
+        return await _search_using_sonarr_episode_metadata(
+            tvdb_id, season, episode, limit, offset
+        )
 
     # Search using multiple queries
     try:
@@ -204,8 +214,12 @@ async def handle_tvsearch_special(
     mapping = await mapping_service.get_mapping(tvdb_id)
 
     if mapping is None:
-        logger.warning(f"No mapping found for TVDB {tvdb_id} - returning empty results")
-        return create_empty_rss()
+        logger.warning(
+            f"No mapping found for TVDB {tvdb_id}; trying Sonarr metadata fallback"
+        )
+        return await _search_special_using_sonarr_metadata(
+            tvdb_id, query, limit, offset
+        )
 
     # Get search titles from mapping
     titles = mapping.get_search_titles()
@@ -326,6 +340,103 @@ async def handle_tvsearch_special(
     # Non-numeric query or no query - treat as special search
     logger.info(f"Searching for specials using title: {primary_title}")
     return await _search_for_special(tvdb_id, titles, None, limit, offset)
+
+
+async def _search_using_sonarr_episode_metadata(
+    tvdb_id: int, season: int, episode: int, limit: int, offset: int
+) -> Response:
+    """Search by Sonarr episode metadata when local anime mapping is missing."""
+    if not sonarr_client.is_configured():
+        logger.warning(
+            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: client not configured"
+        )
+        return create_empty_rss()
+
+    episode_info = await sonarr_client.get_episode_by_season_episode(
+        tvdb_id, season, episode
+    )
+    if episode_info is None:
+        logger.warning(
+            f"Sonarr metadata fallback failed for TVDB {tvdb_id} S{season:02d}E{episode:02d}"
+        )
+        return create_empty_rss()
+
+    absolute_episode = episode_info.absolute_episode_number or episode
+    logger.info(
+        f"Sonarr metadata fallback resolved TVDB {tvdb_id} "
+        f"S{season:02d}E{episode:02d} -> title='{episode_info.series_title}', "
+        f"absolute={absolute_episode}"
+    )
+
+    return await _search_for_absolute_episodes(
+        tvdb_id,
+        [episode_info.series_title],
+        [absolute_episode],
+        limit,
+        offset,
+        episode_metadata={
+            absolute_episode: (
+                episode_info.season_number,
+                episode_info.episode_number,
+            )
+        },
+    )
+
+
+async def _search_special_using_sonarr_metadata(
+    tvdb_id: int, query: Optional[str], limit: int, offset: int
+) -> Response:
+    """Search a no-season TVDB query using Sonarr metadata when mapping is missing."""
+    if not (query and query.strip().isdigit()):
+        logger.warning(
+            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: query is not numeric"
+        )
+        return create_empty_rss()
+
+    if not sonarr_client.is_configured():
+        logger.warning(
+            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: client not configured"
+        )
+        return create_empty_rss()
+
+    query_num = int(query.strip())
+    episode_info = await sonarr_client.get_episode_by_absolute_number(
+        tvdb_id, query_num
+    )
+    if episode_info is None:
+        logger.warning(
+            f"Sonarr metadata fallback failed for TVDB {tvdb_id} absolute episode {query_num}"
+        )
+        return create_empty_rss()
+
+    logger.info(
+        f"Sonarr metadata fallback resolved TVDB {tvdb_id} absolute {query_num} -> "
+        f"title='{episode_info.series_title}', "
+        f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d}"
+    )
+
+    if episode_info.is_special:
+        return await _search_for_special(
+            tvdb_id,
+            [episode_info.series_title],
+            query_num,
+            limit,
+            offset,
+        )
+
+    return await _search_for_absolute_episodes(
+        tvdb_id,
+        [episode_info.series_title],
+        [query_num],
+        limit,
+        offset,
+        episode_metadata={
+            query_num: (
+                episode_info.season_number,
+                episode_info.episode_number,
+            )
+        },
+    )
 
 
 def _filter_season_titles(titles: list[str]) -> list[str]:
@@ -566,7 +677,12 @@ async def _search_for_special(
 
 
 async def handle_search(
-    query: str, limit: int, offset: int, is_special: bool = False
+    query: str,
+    limit: int,
+    offset: int,
+    is_special: bool = False,
+    season: Optional[int] = None,
+    episode: Optional[int] = None,
 ) -> Response:
     """
     Handle generic search with smart query parsing.
@@ -666,11 +782,21 @@ async def handle_search(
                     )
                 relevant_results = episode_results
 
-            # Sort by seeders (descending) then pub_date (descending, newer first)
-            relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-            paginated_results = relevant_results[offset : offset + limit]
+            rss_results = _normalize_result_titles_for_sonarr(
+                relevant_results,
+                series_title=base_query,
+                season=season,
+                episode=episode,
+                absolute_episode=episode_num,
+            )
 
-        rss_xml = create_torznab_rss(paginated_results)
+            # Sort by seeders (descending) then pub_date (descending, newer first)
+            rss_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
+            paginated_results = rss_results[offset : offset + limit]
+
+        rss_xml = create_torznab_rss(
+            paginated_results, season=season, episode=episode
+        )
         return Response(content=rss_xml, media_type="application/xml")
 
     except Exception as e:
