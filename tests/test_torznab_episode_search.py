@@ -102,8 +102,56 @@ def test_sonarr_title_normalizer_rewrites_to_canonical_episode(monkeypatch) -> N
         absolute_episode=1156,
     )
 
-    assert normalized[0].title == "[SubsPlease] One Piece - S23E01 - 1156 (1080p)"
+    assert (
+        normalized[0].title
+        == "[SubsPlease] One Piece - S23E01 - 1156 (1080p) [662D886D].mkv"
+    )
     assert results[0].title == "[SubsPlease] One Piece - 1156 (1080p) [662D886D].mkv"
+
+
+def test_sonarr_title_normalizer_preserves_release_metadata(monkeypatch) -> None:
+    """Normalizer should keep codec, audio, subtitle, and tag metadata."""
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    results = [
+        _result(
+            "[DKB] Witch Hat Atelier - S01E10 "
+            "[1080p][HEVC x265 10bit][Multi-Audio][Multi-Subs][weekly]"
+        )
+    ]
+
+    normalized = torznab._normalize_result_titles_for_sonarr(
+        results,
+        series_title="Witch Hat Atelier",
+        season=1,
+        episode=10,
+        absolute_episode=None,
+    )
+
+    assert (
+        normalized[0].title == "[DKB] Witch Hat Atelier - S01E10 "
+        "[1080p][HEVC x265 10bit][Multi-Audio][Multi-Subs][weekly]"
+    )
+
+
+def test_sonarr_title_normalizer_preserves_space_separated_metadata(
+    monkeypatch,
+) -> None:
+    """Normalizer should keep non-bracketed source, audio, and codec metadata."""
+    monkeypatch.setattr(settings, "SONARR_TITLE_NORMALIZER_ENABLED", True)
+    results = [_result("[ToonsHub] One Piece EP1156 1080p WEB-DL AAC2.0 H.264")]
+
+    normalized = torznab._normalize_result_titles_for_sonarr(
+        results,
+        series_title="One Piece",
+        season=23,
+        episode=1,
+        absolute_episode=1156,
+    )
+
+    assert (
+        normalized[0].title
+        == "[ToonsHub] One Piece - S23E01 - 1156 1080p WEB-DL AAC2.0 H.264"
+    )
 
 
 @pytest.mark.asyncio
@@ -150,7 +198,7 @@ async def test_generic_tvsearch_context_enables_title_normalizer(monkeypatch) ->
     root = ET.fromstring(response.body.decode("utf-8"))
     titles = [element.text for element in root.findall(".//item/title")]
 
-    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p)"]
+    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p) [662D886D].mkv"]
 
 
 @pytest.mark.asyncio
@@ -218,4 +266,4 @@ async def test_tvsearch_uses_sonarr_metadata_when_mapping_missing(monkeypatch) -
     root = ET.fromstring(response.body.decode("utf-8"))
     titles = [element.text for element in root.findall(".//item/title")]
 
-    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p)"]
+    assert titles == ["[SubsPlease] One Piece - S23E01 - 1156 (1080p) [662D886D].mkv"]

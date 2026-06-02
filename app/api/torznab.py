@@ -706,7 +706,9 @@ async def handle_search(
 
         # For specials, search with OVA/Special/Movie keywords
         if is_special:
-            logger.info(f"Special detected - searching with OVA/Special/OAD/Movie keywords")
+            logger.info(
+                f"Special detected - searching with OVA/Special/OAD/Movie keywords"
+            )
 
             search_client = get_search_client()
             special_keywords = ["OVA", "Special", "OAD", "Movie"]
@@ -801,9 +803,7 @@ async def handle_search(
             rss_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
             paginated_results = rss_results[offset : offset + limit]
 
-        rss_xml = create_torznab_rss(
-            paginated_results, season=season, episode=episode
-        )
+        rss_xml = create_torznab_rss(paginated_results, season=season, episode=episode)
         return Response(content=rss_xml, media_type="application/xml")
 
     except Exception as e:
@@ -976,7 +976,10 @@ def _build_sonarr_release_title(
 ) -> str:
     """Build a canonical release title that Sonarr's parser should recognize."""
     release_group = _extract_release_group(original_title)
-    quality = _extract_quality_tag(original_title)
+    metadata_suffix = _extract_release_metadata_suffix(
+        original_title, season, episode, absolute_episode
+    )
+    quality = _extract_quality_tag(original_title) if not metadata_suffix else None
     revision = _extract_revision_tag(original_title)
 
     title_parts = [f"{series_title} - S{season:02d}E{episode:02d}"]
@@ -986,12 +989,47 @@ def _build_sonarr_release_title(
     normalized_title = " - ".join(title_parts)
     if revision:
         normalized_title = f"{normalized_title}{revision}"
-    if quality:
+    if metadata_suffix:
+        normalized_title = f"{normalized_title} {metadata_suffix}"
+    elif quality:
         normalized_title = f"{normalized_title} ({quality})"
     if release_group:
         normalized_title = f"[{release_group}] {normalized_title}"
 
     return normalized_title
+
+
+def _strip_leading_release_group(title: str) -> str:
+    """Remove a leading bracketed release group from a release title."""
+    return re.sub(r"^\[[^\]]+\]\s+", "", title or "", count=1).strip()
+
+
+def _extract_release_metadata_suffix(
+    title: str,
+    season: int,
+    episode: int,
+    absolute_episode: Optional[int] = None,
+) -> str:
+    """Extract codec, source, audio, subtitle, and other trailing release metadata."""
+    title_without_group = _strip_leading_release_group(title)
+    candidate_patterns = [
+        rf"\bS0*{season}E0*{episode}(?:v\d+)?\b",
+        rf"\b{episode}(?:v\d+)?\b",
+    ]
+    if absolute_episode:
+        candidate_patterns.insert(
+            1, rf"(?<![A-Za-z0-9])(?:EP)?{absolute_episode}(?:v\d+)?(?![A-Za-z0-9])"
+        )
+
+    for pattern in candidate_patterns:
+        match = re.search(pattern, title_without_group, re.IGNORECASE)
+        if not match:
+            continue
+
+        suffix = title_without_group[match.end() :].strip()
+        return re.sub(r"^(?:[-–—_.]\s*)+", "", suffix).strip()
+
+    return ""
 
 
 def _extract_release_group(title: str) -> Optional[str]:
@@ -1140,7 +1178,9 @@ async def handle_movie_search(
             logger.info(
                 f"Found movie mapping for TMDB {tmdb_id}: {mapping.titles.romaji or mapping.titles.english}"
             )
-            return await _search_movie_by_mapping(mapping, year, limit, offset, tmdb_id=tmdb_id)
+            return await _search_movie_by_mapping(
+                mapping, year, limit, offset, tmdb_id=tmdb_id
+            )
         else:
             logger.warning(f"No mapping found for TMDB {tmdb_id}")
 
@@ -1155,7 +1195,9 @@ async def handle_movie_search(
             logger.info(
                 f"Found movie mapping for IMDb {imdb_id}: {mapping.titles.romaji or mapping.titles.english}"
             )
-            return await _search_movie_by_mapping(mapping, year, limit, offset, imdb_id=imdb_id)
+            return await _search_movie_by_mapping(
+                mapping, year, limit, offset, imdb_id=imdb_id
+            )
         else:
             logger.warning(f"No mapping found for IMDb {imdb_id}")
 
