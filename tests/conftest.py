@@ -11,8 +11,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Set up environment variables for testing
 os.environ.setdefault("API_KEY", "test")
-os.environ.setdefault("PROWLARR_URL", "http://localhost:9696")
-os.environ.setdefault("PROWLARR_API_KEY", "test")
+os.environ.setdefault("NYAA_URL", "https://nyaa.si")
+os.environ.setdefault("NYAA_CATEGORY", "1_2")
+os.environ.setdefault("NYAA_NO_REMAKES", "true")
 os.environ.setdefault("DATA_DIR", str(Path(__file__).parent.parent / "data"))
 
 

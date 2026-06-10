@@ -40,9 +40,8 @@ NYAA_NS = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
 class NyaaClient:
     """Direct client for Nyaa.si RSS feed.
 
-    Provides the same interface as ProwlarrClient but searches Nyaa.si directly,
-    allowing for better filtering (English-only, trusted uploads) and removing
-    the Prowlarr middleware dependency.
+    Searches Nyaa.si directly, allowing for Nyaa-specific filtering, caching,
+    and rate limiting.
 
     Features:
     - Combined query support using Nyaa's | (OR) operator
@@ -241,8 +240,6 @@ class NyaaClient:
         """
         Search Nyaa.si RSS feed.
 
-        Matches the ProwlarrClient.search() interface for drop-in replacement.
-
         Args:
             query: Search query
             limit: Maximum results to return (applied after fetch)
@@ -254,15 +251,12 @@ class NyaaClient:
         if limit is None:
             limit = settings.MAX_RESULTS_PER_QUERY
 
-        # Determine category based on settings
-        if settings.NYAA_ENGLISH_ONLY:
-            category = NYAA_CATEGORY_ANIME_ENGLISH
-        else:
-            category = NYAA_CATEGORY_ALL_ANIME
+        category = settings.NYAA_CATEGORY
 
-        # Determine filter based on settings
         if settings.NYAA_TRUSTED_ONLY:
             filter_code = NYAA_FILTER_TRUSTED
+        elif settings.NYAA_NO_REMAKES:
+            filter_code = NYAA_FILTER_NO_REMAKES
         else:
             filter_code = NYAA_FILTER_NONE
 
@@ -411,6 +405,7 @@ class NyaaClient:
         category_id = self._get_nyaa_text(item, "categoryId", "")
         info_hash = self._get_nyaa_text(item, "infoHash", "")
         trusted = self._get_nyaa_text(item, "trusted", "No")
+        remake = self._get_nyaa_text(item, "remake", "No")
 
         # Parse numeric fields
         try:
@@ -426,21 +421,28 @@ class NyaaClient:
         size = self._parse_size(size_str)
         pub_date = self._parse_date(pub_date_str)
 
-        # Log trusted status for debugging
-        if trusted == "Yes":
+        is_trusted = trusted.lower() == "yes"
+        is_remake = remake.lower() == "yes"
+
+        if is_trusted:
             logger.debug(f"Trusted release: {title}")
 
         return SearchResult(
             title=title,
+            original_title=title,
             guid=guid,
             link=link,  # .torrent download URL (user preference)
             info_url=guid,  # View page URL
             pub_date=pub_date,
             size=size,
             seeders=seeders,
-            peers=leechers,
+            peers=seeders + leechers,
             indexer="nyaa",
             categories=[5070],  # Map to Torznab TV/Anime category for Sonarr
+            info_hash=info_hash.lower() if info_hash else None,
+            nyaa_category_id=category_id,
+            trusted=is_trusted,
+            remake=is_remake,
         )
 
     def _get_nyaa_text(self, item: ET.Element, tag: str, default: str = "") -> str:
