@@ -17,6 +17,7 @@ class ParsedRelease:
     original_title: str
     release_group: Optional[str] = None
     series_title: Optional[str] = None
+    season_numbers: list[int] = field(default_factory=list)
     episode_numbers: list[int] = field(default_factory=list)
     episode_ranges: list[tuple[int, int]] = field(default_factory=list)
     year: Optional[int] = None
@@ -55,9 +56,13 @@ class ReleaseParser:
         series = self._first_dict(parsed.get("series"))
         if series:
             release.series_title = self._first_title(series.get("title"))
+            release.season_numbers = self._episode_numbers(series.get("season"))
             release.episode_numbers = self._episode_numbers(series.get("episode"))
             release.episode_ranges = self._episode_ranges(series.get("episode"))
             release.year = self._number_from_any(series.get("year"))
+
+        if not release.season_numbers:
+            release.season_numbers = self._season_numbers_from_text(title)
 
         release.resolution = self._resolution(parsed.get("video_resolution"))
         release.source = self._first_text(parsed.get("source"))
@@ -146,6 +151,14 @@ class ReleaseParser:
                 number = int(match.group(1))
                 if number > 0 and number not in numbers:
                     numbers.append(number)
+        return numbers
+
+    def _season_numbers_from_text(self, title: str) -> list[int]:
+        numbers: list[int] = []
+        for match in re.finditer(r"\bS0*(\d{1,2})E0*\d{1,3}\b", title, re.IGNORECASE):
+            number = int(match.group(1))
+            if number not in numbers:
+                numbers.append(number)
         return numbers
 
     def _year_from_text(self, title: str) -> Optional[int]:

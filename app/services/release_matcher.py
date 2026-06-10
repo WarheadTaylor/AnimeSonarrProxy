@@ -24,7 +24,7 @@ class ReleaseMatcher:
         if context.is_special:
             if not self._is_special_release(parsed):
                 return None
-        elif context.absolute_episode not in parsed.episode_numbers:
+        elif not self._matches_tv_episode(parsed, context):
             return None
 
         return result.model_copy(
@@ -72,6 +72,21 @@ class ReleaseMatcher:
         lowered = parsed.original_title.lower()
         return any(term in lowered for term in ("ova", "oad", "special"))
 
+    def _matches_tv_episode(
+        self, parsed: ParsedRelease, context: TvSearchContext
+    ) -> bool:
+        seasonal_match = (
+            context.season in parsed.season_numbers
+            and context.episode in parsed.episode_numbers
+        )
+        absolute_match = (
+            context.absolute_episode is not None
+            and context.absolute_episode in parsed.episode_numbers
+        )
+        if context.absolute_episode is None:
+            return seasonal_match
+        return absolute_match or seasonal_match
+
     def _tv_title(self, parsed: ParsedRelease, context: TvSearchContext) -> str:
         group = f"[{parsed.release_group}] " if parsed.release_group else ""
         version = parsed.release_version or ""
@@ -81,6 +96,8 @@ class ReleaseMatcher:
             parts.append(str(context.absolute_episode))
         title = f"{group}{' - '.join(parts)}"
         metadata = self._metadata(parsed)
+        if metadata and context.absolute_episode is None:
+            return f"{title} - {metadata}".strip()
         return f"{title} {metadata}".strip()
 
     def _movie_title(self, parsed: ParsedRelease, context: MovieSearchContext) -> str:

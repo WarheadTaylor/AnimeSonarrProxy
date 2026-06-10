@@ -96,10 +96,14 @@ class CoreSearchService:
         """Run a guarded generic Nyaa search for indexer tests and manual searches."""
         results = await nyaa_client.search(query, limit=limit)
         absolute_episode = self._trailing_episode(query)
-        if absolute_episode is None or season is None or episode is None:
+        if season is None or episode is None:
             return self._rank(results, limit)
 
-        series_title = re.sub(r"\s+\d{1,5}\s*$", "", query).strip()
+        series_title = (
+            re.sub(r"\s+\d{1,5}\s*$", "", query).strip()
+            if absolute_episode is not None
+            else query.strip()
+        )
         if not series_title:
             return self._rank(results, limit)
 
