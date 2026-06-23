@@ -24,6 +24,9 @@ class ReleaseMatcher:
         if context.is_special:
             if not self._is_special_release(parsed):
                 return None
+        elif context.is_live_action:
+            if not self._matches_live_action_episode(parsed, context):
+                return None
         elif not self._matches_tv_episode(parsed, context):
             return None
 
@@ -87,12 +90,26 @@ class ReleaseMatcher:
             return seasonal_match
         return absolute_match or seasonal_match
 
+    def _matches_live_action_episode(
+        self, parsed: ParsedRelease, context: TvSearchContext
+    ) -> bool:
+        if context.year and parsed.year and parsed.year != context.year:
+            return False
+        if parsed.season_numbers:
+            return (
+                context.season in parsed.season_numbers
+                and context.episode in parsed.episode_numbers
+            )
+        if parsed.episode_numbers:
+            return context.episode in parsed.episode_numbers
+        return False
+
     def _tv_title(self, parsed: ParsedRelease, context: TvSearchContext) -> str:
         group = f"[{parsed.release_group}] " if parsed.release_group else ""
         version = parsed.release_version or ""
         episode_part = f"S{context.season:02d}E{context.episode:02d}{version}"
         parts = [context.returned_title, episode_part]
-        if context.absolute_episode:
+        if context.absolute_episode and not context.is_live_action:
             parts.append(str(context.absolute_episode))
         title = f"{group}{' - '.join(parts)}"
         metadata = self._metadata(parsed)

@@ -8,9 +8,11 @@ import pytest
 from app.api import torznab as torznab_module
 from app.api.torznab import parse_categories
 from app.models import SearchResult
+from app.models import SeriesMetadata
 from app.services import core as core_module
+from app.services import metadata as metadata_module
 from app.services.core import CoreSearchService
-from app.services.metadata import MovieSearchContext
+from app.services.metadata import MetadataResolver, MovieSearchContext, TvSearchContext
 from app.services.nyaa import NyaaClient
 from app.services.nyaa import TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH
 from app.services.release_matcher import release_matcher
@@ -57,6 +59,79 @@ class FakeMetadataResolver:
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
         )
+
+
+class FakeAnimeDb:
+    """Fake anime database with no live-action mappings."""
+
+    data = {"data": []}
+
+    def get_by_tvdb_id(self, tvdb_id):
+        """Return no anime mapping for live-action series."""
+        return None
+
+
+class FakeSonarrClient:
+    """Fake Sonarr client exposing series metadata without episode metadata."""
+
+    def is_configured(self):
+        """Return enabled integration."""
+        return True
+
+    async def get_episode_by_season_episode(self, tvdb_id, season, episode):
+        """Simulate an episode lookup miss."""
+        return None
+
+    async def get_series_metadata_by_tvdb_id(self, tvdb_id):
+        """Return canonical Sonarr series metadata."""
+        return SeriesMetadata(
+            tvdb_id=tvdb_id,
+            tvmaze_id=123,
+            imdb_id="tt1234567",
+            title="The Flowers of Evil",
+            alternate_titles=["Flowers of Evil"],
+            year=2026,
+            source="sonarr",
+        )
+
+
+class FakeTMDbClient:
+    """Fake disabled TMDb client."""
+
+    def is_configured(self):
+        """Return disabled TMDb integration."""
+        return False
+
+
+class FakeTVmazeClient:
+    """Fake TVmaze client returning a live-action alias."""
+
+    async def get_show(self, tvmaze_id):
+        """Return TVmaze metadata by direct ID."""
+        return SeriesMetadata(
+            tvdb_id=470866,
+            tvmaze_id=tvmaze_id,
+            title="The Flowers of Evil",
+            alternate_titles=["Aku no Hana"],
+            year=2026,
+            source="tvmaze",
+        )
+
+    async def lookup_by_tvdb_id(self, tvdb_id):
+        """Return no lookup fallback result."""
+        return None
+
+    async def lookup_by_imdb_id(self, imdb_id):
+        """Return no IMDb fallback result."""
+        return None
+
+
+class MissingTVmazeClient(FakeTVmazeClient):
+    """Fake TVmaze miss for fallback coverage."""
+
+    async def get_show(self, tvmaze_id):
+        """Return no direct TVmaze result."""
+        return None
 
 
 class RecordingNyaaClient:
@@ -177,6 +252,123 @@ async def test_movie_search_with_year_keeps_bare_title_retrieval_path(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_live_action_resolve_tv_uses_sonarr_series_when_anime_db_misses(
+    monkeypatch,
+):
+    """Live-action TVDB lookups should use Sonarr title even without episode data."""
+    monkeypatch.setattr(metadata_module, "anime_db", FakeAnimeDb())
+    monkeypatch.setattr(metadata_module, "sonarr_client", FakeSonarrClient())
+    monkeypatch.setattr(metadata_module, "tmdb_client", FakeTMDbClient())
+    monkeypatch.setattr(metadata_module, "tvmaze_client", MissingTVmazeClient())
+
+    context = await MetadataResolver().resolve_tv(
+        470866, 1, 1, is_live_action=True
+    )
+
+    assert context is not None
+    assert context.returned_title == "The Flowers of Evil"
+    assert context.search_titles[:2] == ["The Flowers of Evil", "Flowers of Evil"]
+    assert context.absolute_episode is None
+    assert context.is_live_action is True
+
+
+@pytest.mark.asyncio
+async def test_live_action_resolve_tv_includes_tvmaze_alias(monkeypatch):
+    """External drama metadata aliases should be added to searchable titles."""
+    monkeypatch.setattr(metadata_module, "anime_db", FakeAnimeDb())
+    monkeypatch.setattr(metadata_module, "sonarr_client", FakeSonarrClient())
+    monkeypatch.setattr(metadata_module, "tmdb_client", FakeTMDbClient())
+    monkeypatch.setattr(metadata_module, "tvmaze_client", FakeTVmazeClient())
+
+    context = await MetadataResolver().resolve_tv(
+        470866, 1, 1, is_live_action=True
+    )
+
+    assert context is not None
+    assert "Aku no Hana" in context.search_titles
+
+
+def test_live_action_ep01_alias_matches_and_returns_sonarr_title():
+    """Alias-only Nyaa titles should match but be returned with Sonarr's title."""
+    result = make_result(
+        "[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP] [JPN_ENG_CHT_SUB]"
+    )
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+    )
+
+    matched = release_matcher.match_tv(result, context)
+
+    assert matched is not None
+    assert matched.title.startswith("[MagicStar] The Flowers of Evil - S01E01")
+    assert "Aku no Hana EP01" not in matched.title
+
+
+def test_live_action_ep11_alias_does_not_match_requested_ep01():
+    """Episode-only live-action releases should reject the wrong episode number."""
+    result = make_result(
+        "[MagicStar] Aku no Hana EP11 [WEBDL] [1080p] [DSNP] [JPN_ENG_CHT_SUB]"
+    )
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+    )
+
+    assert release_matcher.match_tv(result, context) is None
+
+
+def test_live_action_s01e01_matches_and_s01e10_does_not():
+    """Seasonal live-action releases should match both requested season and episode."""
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+    )
+
+    matching = make_result(
+        "The.Flowers.of.Evil.2026.S01E01.1080p.DSNP.WEB-DL.AAC2.0.H.264-VARYG"
+    )
+    wrong_episode = make_result(
+        "The Flowers of Evil 2026 S01E10 1080p DSNP WEB-DL AAC2.0 H 264-VARYG"
+    )
+
+    assert release_matcher.match_tv(matching, context) is not None
+    assert release_matcher.match_tv(wrong_episode, context) is None
+
+
+def test_live_action_rejects_wrong_year_when_release_has_year():
+    """Live-action matches should reject parsed years from a different production."""
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+        year=2026,
+    )
+    wrong_year = make_result("The Flowers of Evil 2013 S01E01 1080p WEB-DL")
+
+    assert release_matcher.match_tv(wrong_year, context) is None
+
+
+@pytest.mark.asyncio
 async def test_generic_search_with_season_episode_returns_ranked_raw_results(
     monkeypatch,
 ):
@@ -277,6 +469,48 @@ async def test_generic_tvsearch_filters_known_seasonal_mismatches(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_generic_live_action_search_filters_episode_only_mismatches(
+    monkeypatch,
+):
+    """Live-action generic searches should not keep wrong EPxx releases."""
+    ep01 = make_result(
+        "[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP]",
+        guid="https://nyaa.si/view/ep01",
+        seeders=10,
+    )
+    ep11 = make_result(
+        "[MagicStar] Aku no Hana EP11 [WEBDL] [1080p] [DSNP]",
+        guid="https://nyaa.si/view/ep11",
+        seeders=100,
+    )
+    s01e01 = make_result(
+        "The.Flowers.of.Evil.2026.S01E01.1080p.DSNP.WEB-DL",
+        guid="https://nyaa.si/view/s01e01",
+        seeders=20,
+    )
+    s01e10 = make_result(
+        "The Flowers of Evil 2026 S01E10 1080p DSNP WEB-DL",
+        guid="https://nyaa.si/view/s01e10",
+        seeders=90,
+    )
+    nyaa = RecordingNyaaClient([ep11, s01e10, ep01, s01e01])
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    results = await CoreSearchService().generic_search(
+        "Flowers of Evil",
+        limit=10,
+        season=1,
+        episode=1,
+        categories=[TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+    )
+
+    assert [result.guid for result in results] == [
+        "https://nyaa.si/view/s01e01",
+        "https://nyaa.si/view/ep01",
+    ]
+
+
 def test_parser_extracts_nonstandard_season_markers():
     """Common Nyaa season markers should be available to fallback filtering."""
     s4_release = release_parser.parse(
@@ -296,6 +530,30 @@ def test_parser_extracts_nonstandard_season_markers():
     assert s4_release.season_numbers == [4]
     assert fourth_release.season_numbers == [4]
     assert season_release.season_numbers == [4]
+
+
+def test_parser_extracts_live_action_episode_formats():
+    """Live-action EPxx and SxxEyy titles should parse without year confusion."""
+    ep_release = release_parser.parse(
+        "[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP]"
+    )
+    dotted_release = release_parser.parse(
+        "The.Flowers.of.Evil.2026.S01E01.1080p.DSNP.WEB-DL"
+    )
+    spaced_release = release_parser.parse(
+        "The Flowers of Evil 2026 S01E01 1080p DSNP WEB-DL"
+    )
+
+    assert ep_release.episode_numbers == [1]
+    assert ep_release.season_numbers == []
+    assert dotted_release.season_numbers == [1]
+    assert dotted_release.episode_numbers == [1]
+    assert dotted_release.year == 2026
+    assert 2026 not in dotted_release.episode_numbers
+    assert spaced_release.season_numbers == [1]
+    assert spaced_release.episode_numbers == [1]
+    assert spaced_release.year == 2026
+    assert 2026 not in spaced_release.episode_numbers
 
 
 def test_missing_and_malformed_nyaa_dates_are_timezone_aware_and_rankable():

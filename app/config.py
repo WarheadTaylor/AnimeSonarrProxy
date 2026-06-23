@@ -1,8 +1,9 @@
 """Configuration management for AnimeSonarrProxy."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, List, Optional
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -26,6 +27,21 @@ class Settings(BaseSettings):
     # Radarr Settings (optional - for movie metadata lookup)
     RADARR_URL: Optional[str] = None  # e.g., "http://localhost:7878"
     RADARR_API_KEY: Optional[str] = None
+
+    # Live-action drama metadata settings
+    TMDB_API_KEY: Optional[str] = None
+    DRAMA_METADATA_ENABLED: bool = True
+    DRAMA_METADATA_SOURCE_ORDER: List[str] = Field(
+        default_factory=lambda: ["sonarr", "tmdb", "tvmaze"]
+    )
+
+    @field_validator("DRAMA_METADATA_SOURCE_ORDER", mode="before")
+    @classmethod
+    def parse_drama_metadata_source_order(cls, value: Any) -> Any:
+        """Allow drama metadata source order as JSON or comma-separated text."""
+        if isinstance(value, str) and not value.strip().startswith("["):
+            return [source.strip() for source in value.split(",") if source.strip()]
+        return value
 
     # Database Settings
     DATA_DIR: Path = Path("/app/data")

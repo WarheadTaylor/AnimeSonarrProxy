@@ -14,6 +14,22 @@ class AnimeTitle(BaseModel):
     synonyms: List[str] = Field(default_factory=list)
 
 
+class SeriesMetadata(BaseModel):
+    """Normalized series metadata from Sonarr and external providers."""
+
+    tvdb_id: Optional[int] = None
+    tmdb_id: Optional[int] = None
+    tvmaze_id: Optional[int] = None
+    imdb_id: Optional[str] = None
+    title: str
+    original_title: Optional[str] = None
+    alternate_titles: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    country: Optional[str] = None
+    language: Optional[str] = None
+    source: str
+
+
 class SearchResult(BaseModel):
     """Internal search result before Torznab formatting."""
 

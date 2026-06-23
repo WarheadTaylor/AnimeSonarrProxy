@@ -7,7 +7,7 @@ from typing import Optional
 from app.config import settings
 from app.models import SearchResult
 from app.services.metadata import metadata_resolver
-from app.services.nyaa import nyaa_client
+from app.services.nyaa import TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH, nyaa_client
 from app.services.release_matcher import release_matcher
 from app.services.release_parser import release_parser
 
@@ -26,7 +26,10 @@ class CoreSearchService:
         categories: Optional[list[int]] = None,
     ) -> tuple[list[SearchResult], dict[str, object]]:
         """Search Nyaa for a Sonarr TV request."""
-        context = await metadata_resolver.resolve_tv(tvdb_id, season, episode)
+        is_live_action = self._is_live_action_search(categories)
+        context = await metadata_resolver.resolve_tv(
+            tvdb_id, season, episode, is_live_action=is_live_action
+        )
         if context is None:
             return [], {}
 
@@ -118,6 +121,11 @@ class CoreSearchService:
         absolute_episode = self._trailing_episode(query)
         if season is None or episode is None:
             return self._rank(results, limit)
+        if self._is_live_action_search(categories):
+            return self._rank(
+                self._filter_live_action_episode_mismatches(results, season, episode),
+                limit,
+            )
         if absolute_episode is None:
             return self._rank(
                 self._filter_known_seasonal_mismatches(results, season, episode),
@@ -164,6 +172,26 @@ class CoreSearchService:
             filtered.append(result)
         return filtered
 
+    def _filter_live_action_episode_mismatches(
+        self, results: list[SearchResult], season: int, episode: int
+    ) -> list[SearchResult]:
+        """Drop live-action releases that disagree with the requested episode."""
+        filtered = []
+        for result in results:
+            parsed = release_parser.parse(result.original_title or result.title)
+            if parsed.is_batch:
+                continue
+            if parsed.season_numbers:
+                if season not in parsed.season_numbers:
+                    continue
+                if episode not in parsed.episode_numbers:
+                    continue
+                filtered.append(result)
+                continue
+            if parsed.episode_numbers and episode in parsed.episode_numbers:
+                filtered.append(result)
+        return filtered
+
     def _rank(self, results: list[SearchResult], limit: int) -> list[SearchResult]:
         unique: dict[str, SearchResult] = {}
         for result in results:
@@ -185,6 +213,9 @@ class CoreSearchService:
             return None
         episode = int(match.group(1))
         return episode if episode > 0 else None
+
+    def _is_live_action_search(self, categories: Optional[list[int]]) -> bool:
+        return bool(categories and TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH in categories)
 
 
 core_search_service = CoreSearchService()

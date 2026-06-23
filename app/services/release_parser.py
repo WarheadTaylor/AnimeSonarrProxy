@@ -146,6 +146,7 @@ class ReleaseParser:
         self, title: str, release_year: Optional[int] = None
     ) -> list[int]:
         patterns = [
+            (r"\bS0*\d{1,2}E0*(\d{1,3})(?:v\d+)?\b", False),
             (r"(?<![A-Za-z0-9])EP\s*0*(\d{1,5})(?:v\d+)?(?![A-Za-z0-9])", False),
             (r"(?<![A-Za-z0-9])-?\s0*(\d{1,5})(?:v\d+)?(?:\s|\[|\(|$)", True),
         ]
