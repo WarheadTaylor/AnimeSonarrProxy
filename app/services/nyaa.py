@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 from urllib.parse import quote_plus
 import httpx
@@ -494,7 +494,7 @@ class NyaaClient:
         Nyaa uses RFC 2822 format: "Tue, 09 Sep 2025 20:24:10 -0000"
         """
         if not date_str:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
 
         # Try common RSS date formats
         formats = [
@@ -507,12 +507,15 @@ class NyaaClient:
 
         for fmt in formats:
             try:
-                return datetime.strptime(date_str, fmt)
+                parsed = datetime.strptime(date_str, fmt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
             except ValueError:
                 continue
 
         logger.warning(f"Could not parse date: {date_str}")
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)
 
 
 # Singleton instance
