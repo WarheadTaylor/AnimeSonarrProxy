@@ -18,7 +18,8 @@ class ReleaseMatcher:
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None
-        if not self._title_matches(parsed, context.search_titles):
+        matched_title = self._matched_title(parsed, context.search_titles)
+        if not matched_title:
             return None
 
         if context.is_special:
@@ -32,7 +33,7 @@ class ReleaseMatcher:
 
         return result.model_copy(
             update={
-                "title": self._tv_title(parsed, context),
+                "title": self._tv_title(parsed, context, matched_title),
                 "original_title": result.original_title or result.title,
             }
         )
@@ -44,7 +45,7 @@ class ReleaseMatcher:
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None
-        if not self._title_matches(parsed, context.search_titles):
+        if not self._matched_title(parsed, context.search_titles):
             return None
         if parsed.episode_numbers:
             return None
@@ -58,7 +59,9 @@ class ReleaseMatcher:
             }
         )
 
-    def _title_matches(self, parsed: ParsedRelease, search_titles: list[str]) -> bool:
+    def _matched_title(
+        self, parsed: ParsedRelease, search_titles: list[str]
+    ) -> Optional[str]:
         haystacks = [
             self._normalize_title(parsed.series_title or ""),
             self._normalize_title(parsed.original_title),
@@ -68,8 +71,8 @@ class ReleaseMatcher:
             if not needle:
                 continue
             if any(needle in haystack or haystack in needle for haystack in haystacks):
-                return True
-        return False
+                return title
+        return None
 
     def _is_special_release(self, parsed: ParsedRelease) -> bool:
         lowered = parsed.original_title.lower()
@@ -104,11 +107,19 @@ class ReleaseMatcher:
             return context.episode in parsed.episode_numbers
         return False
 
-    def _tv_title(self, parsed: ParsedRelease, context: TvSearchContext) -> str:
+    def _tv_title(
+        self, parsed: ParsedRelease, context: TvSearchContext, matched_title: str
+    ) -> str:
         group = f"[{parsed.release_group}] " if parsed.release_group else ""
         version = parsed.release_version or ""
         episode_part = f"S{context.season:02d}E{context.episode:02d}{version}"
-        parts = [context.returned_title, episode_part]
+        returned_key = self._normalize_title(context.returned_title)
+        matched_key = self._normalize_title(matched_title)
+        display_title = context.returned_title
+        if context.is_live_action and matched_key and matched_key != returned_key:
+            display_title = f"{context.returned_title} | {matched_title}"
+
+        parts = [display_title, episode_part]
         if context.absolute_episode and not context.is_live_action:
             parts.append(str(context.absolute_episode))
         title = f"{group}{' - '.join(parts)}"

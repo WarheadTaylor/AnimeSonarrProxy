@@ -15,6 +15,7 @@ from app.services import tvmaze as tvmaze_module
 from app.services.core import CoreSearchService
 from app.services.metadata import MetadataResolver, MovieSearchContext, TvSearchContext
 from app.services.nyaa import NyaaClient
+from app.services.nyaa import NYAA_CATEGORY_LIVE_ACTION_ENGLISH
 from app.services.nyaa import TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH
 from app.services.release_matcher import release_matcher
 from app.services.release_parser import release_parser
@@ -333,8 +334,8 @@ async def test_tvmaze_lookup_follows_redirects(monkeypatch):
     assert async_client_kwargs[0]["follow_redirects"] is True
 
 
-def test_live_action_ep01_alias_matches_and_returns_sonarr_title():
-    """Alias-only Nyaa titles should match but be returned with Sonarr's title."""
+def test_live_action_ep01_alias_matches_and_returns_pipe_separated_title():
+    """Alias-only Nyaa titles should include canonical and alias titles."""
     result = make_result(
         "[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP] [JPN_ENG_CHT_SUB]"
     )
@@ -351,8 +352,33 @@ def test_live_action_ep01_alias_matches_and_returns_sonarr_title():
     matched = release_matcher.match_tv(result, context)
 
     assert matched is not None
-    assert matched.title.startswith("[MagicStar] The Flowers of Evil - S01E01")
+    assert matched.title.startswith(
+        "[MagicStar] The Flowers of Evil | Aku no Hana - S01E01"
+    )
     assert "Aku no Hana EP01" not in matched.title
+    assert matched.original_title == result.title
+
+
+def test_live_action_canonical_title_match_does_not_duplicate_name():
+    """Canonical live-action matches should not render duplicate pipe titles."""
+    result = make_result(
+        "The.Flowers.of.Evil.2026.S01E01.1080p.DSNP.WEB-DL.AAC2.0.H.264-VARYG"
+    )
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+    )
+
+    matched = release_matcher.match_tv(result, context)
+
+    assert matched is not None
+    assert matched.title.startswith("[VARYG] The Flowers of Evil - S01E01")
+    assert "The Flowers of Evil | The Flowers of Evil" not in matched.title
 
 
 def test_live_action_ep11_alias_does_not_match_requested_ep01():
@@ -638,6 +664,33 @@ def test_nyaa_selected_categories_can_use_torznab_category_selection():
     assert NyaaClient()._selected_categories(
         [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
     ) == ["4_1"]
+
+
+def test_nyaa_rss_live_action_category_maps_to_torznab_live_action():
+    """Nyaa live-action RSS items should render with the live-action Torznab category."""
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa">
+    <channel>
+        <item>
+            <title>[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP]</title>
+            <guid>https://nyaa.si/view/1</guid>
+            <link>https://nyaa.si/download/1.torrent</link>
+            <pubDate>Tue, 09 Sep 2025 20:24:10 -0000</pubDate>
+            <nyaa:seeders>5</nyaa:seeders>
+            <nyaa:leechers>2</nyaa:leechers>
+            <nyaa:size>1.0 GiB</nyaa:size>
+            <nyaa:categoryId>{NYAA_CATEGORY_LIVE_ACTION_ENGLISH}</nyaa:categoryId>
+            <nyaa:infoHash>ABC123</nyaa:infoHash>
+            <nyaa:trusted>No</nyaa:trusted>
+            <nyaa:remake>No</nyaa:remake>
+        </item>
+    </channel>
+</rss>"""
+
+    results = NyaaClient()._parse_rss_response(xml)
+
+    assert len(results) == 1
+    assert results[0].categories == [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
 
 
 def test_parse_categories_dedupes_and_ignores_invalid_values():

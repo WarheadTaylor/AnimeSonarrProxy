@@ -104,6 +104,12 @@ class NyaaClient:
 
         return categories
 
+    def _torznab_categories_for_nyaa_category(self, category_id: str) -> List[int]:
+        """Map a Nyaa RSS category ID to Torznab categories."""
+        if category_id == NYAA_CATEGORY_LIVE_ACTION_ENGLISH:
+            return [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+        return [TORZNAB_CATEGORY_ANIME]
+
     def _get_cached_results(self, cache_key: str) -> Optional[List[SearchResult]]:
         """Get cached results if still valid."""
         if cache_key in self._search_cache:
@@ -540,7 +546,7 @@ class NyaaClient:
             seeders=seeders,
             peers=seeders + leechers,
             indexer="nyaa",
-            categories=[5070],  # Map to Torznab TV/Anime category for Sonarr
+            categories=self._torznab_categories_for_nyaa_category(category_id),
             info_hash=info_hash.lower() if info_hash else None,
             nyaa_category_id=category_id,
             trusted=is_trusted,
