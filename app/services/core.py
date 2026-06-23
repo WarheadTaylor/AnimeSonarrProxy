@@ -75,6 +75,14 @@ class CoreSearchService:
             keywords=keywords if context.year else None,
             limit=limit,
         )
+        if context.year:
+            results.extend(
+                await nyaa_client.search_multi(
+                    titles=context.search_titles,
+                    limit=limit,
+                )
+            )
+
         matched = [
             normalized
             for result in results
@@ -98,12 +106,10 @@ class CoreSearchService:
         absolute_episode = self._trailing_episode(query)
         if season is None or episode is None:
             return self._rank(results, limit)
+        if absolute_episode is None:
+            return self._rank(results, limit)
 
-        series_title = (
-            re.sub(r"\s+\d{1,5}\s*$", "", query).strip()
-            if absolute_episode is not None
-            else query.strip()
-        )
+        series_title = re.sub(r"\s+\d{1,5}\s*$", "", query).strip()
         if not series_title:
             return self._rank(results, limit)
 
