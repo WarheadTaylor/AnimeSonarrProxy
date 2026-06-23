@@ -11,6 +11,7 @@ from app.models import SearchResult
 from app.models import SeriesMetadata
 from app.services import core as core_module
 from app.services import metadata as metadata_module
+from app.services import tvmaze as tvmaze_module
 from app.services.core import CoreSearchService
 from app.services.metadata import MetadataResolver, MovieSearchContext, TvSearchContext
 from app.services.nyaa import NyaaClient
@@ -132,6 +133,23 @@ class MissingTVmazeClient(FakeTVmazeClient):
     async def get_show(self, tvmaze_id):
         """Return no direct TVmaze result."""
         return None
+
+
+class FakeTVmazeResponse:
+    """Fake successful TVmaze API response."""
+
+    status_code = 200
+
+    def raise_for_status(self):
+        """No-op for successful fake responses."""
+
+    def json(self):
+        """Return minimal show metadata."""
+        return {
+            "name": "The Flowers of Evil",
+            "externals": {"thetvdb": 470866},
+            "premiered": "2026-04-04",
+        }
 
 
 class RecordingNyaaClient:
@@ -286,6 +304,33 @@ async def test_live_action_resolve_tv_includes_tvmaze_alias(monkeypatch):
 
     assert context is not None
     assert "Aku no Hana" in context.search_titles
+
+
+@pytest.mark.asyncio
+async def test_tvmaze_lookup_follows_redirects(monkeypatch):
+    """TVmaze lookup endpoints redirect to show URLs and should be followed."""
+    async_client_kwargs = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            async_client_kwargs.append(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get(self, url, params=None):
+            return FakeTVmazeResponse()
+
+    monkeypatch.setattr(tvmaze_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    metadata = await tvmaze_module.TVmazeClient().lookup_by_tvdb_id(470866)
+
+    assert metadata is not None
+    assert metadata.title == "The Flowers of Evil"
+    assert async_client_kwargs[0]["follow_redirects"] is True
 
 
 def test_live_action_ep01_alias_matches_and_returns_sonarr_title():

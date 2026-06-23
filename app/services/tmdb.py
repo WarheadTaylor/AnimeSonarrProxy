@@ -1,7 +1,7 @@
 """TMDb API client for live-action series metadata lookup."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -140,14 +140,16 @@ class TMDbClient:
         if not cached:
             return None
         metadata, cached_at = cached
-        if datetime.utcnow() - cached_at < timedelta(seconds=settings.CACHE_TTL):
+        if datetime.now(timezone.utc) - cached_at < timedelta(
+            seconds=settings.CACHE_TTL
+        ):
             return metadata
         del self._cache[cache_key]
         return None
 
     def _cache_result(self, cache_key: str, metadata: Optional[SeriesMetadata]) -> None:
         if metadata is not None:
-            self._cache[cache_key] = (metadata, datetime.utcnow())
+            self._cache[cache_key] = (metadata, datetime.now(timezone.utc))
 
     def _year(self, date_text: str) -> Optional[int]:
         if len(date_text) >= 4 and date_text[:4].isdigit():

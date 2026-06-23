@@ -1,7 +1,7 @@
 """TVmaze API client for live-action series metadata lookup."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -55,7 +55,7 @@ class TVmazeClient:
         self, url: str, params: Optional[dict[str, str]] = None
     ) -> Optional[SeriesMetadata]:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 response = await client.get(url, params=params)
                 if response.status_code == 404:
                     return None
@@ -73,7 +73,7 @@ class TVmazeClient:
 
     async def _akas(self, tvmaze_id: int) -> list[str]:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 response = await client.get(f"{self.base_url}/shows/{tvmaze_id}/akas")
                 response.raise_for_status()
                 data = response.json()
@@ -117,14 +117,16 @@ class TVmazeClient:
         if not cached:
             return None
         metadata, cached_at = cached
-        if datetime.utcnow() - cached_at < timedelta(seconds=settings.CACHE_TTL):
+        if datetime.now(timezone.utc) - cached_at < timedelta(
+            seconds=settings.CACHE_TTL
+        ):
             return metadata
         del self._cache[cache_key]
         return None
 
     def _cache_result(self, cache_key: str, metadata: Optional[SeriesMetadata]) -> None:
         if metadata is not None:
-            self._cache[cache_key] = (metadata, datetime.utcnow())
+            self._cache[cache_key] = (metadata, datetime.now(timezone.utc))
 
     def _year(self, date_text: str) -> Optional[int]:
         if len(date_text) >= 4 and date_text[:4].isdigit():
