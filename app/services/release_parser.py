@@ -69,10 +69,12 @@ class ReleaseParser:
         release.release_version = self._release_version(parsed, series)
         release.metadata_suffix = self._metadata_suffix(title)
 
-        if not release.episode_numbers:
-            release.episode_numbers = self._episode_numbers_from_text(title)
         if release.year is None:
             release.year = self._year_from_text(title)
+        if not release.episode_numbers:
+            release.episode_numbers = self._episode_numbers_from_text(
+                title, release.year
+            )
         if release.release_group is None:
             release.release_group = self._leading_group(title)
 
@@ -140,18 +142,40 @@ class ReleaseParser:
                 ranges.append((start, end))
         return ranges
 
-    def _episode_numbers_from_text(self, title: str) -> list[int]:
+    def _episode_numbers_from_text(
+        self, title: str, release_year: Optional[int] = None
+    ) -> list[int]:
         patterns = [
-            r"(?<![A-Za-z0-9])EP\s*0*(\d{1,5})(?:v\d+)?(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])-?\s0*(\d{1,5})(?:v\d+)?(?:\s|\[|\(|$)",
+            (r"(?<![A-Za-z0-9])EP\s*0*(\d{1,5})(?:v\d+)?(?![A-Za-z0-9])", False),
+            (r"(?<![A-Za-z0-9])-?\s0*(\d{1,5})(?:v\d+)?(?:\s|\[|\(|$)", True),
         ]
         numbers: list[int] = []
-        for pattern in patterns:
+        for pattern, skip_year_metadata in patterns:
             for match in re.finditer(pattern, title, re.IGNORECASE):
                 number = int(match.group(1))
+                if (
+                    skip_year_metadata
+                    and release_year == number
+                    and self._is_dash_delimited_year_metadata(title, match)
+                ):
+                    continue
                 if number > 0 and number not in numbers:
                     numbers.append(number)
         return numbers
+
+    def _is_dash_delimited_year_metadata(
+        self, title: str, match: re.Match[str]
+    ) -> bool:
+        number = int(match.group(1))
+        if number < 1900 or number > 2099:
+            return False
+
+        start, end = match.span(1)
+        prefix = title[max(0, start - 4) : start]
+        suffix = title[end:]
+        return bool(re.search(r"(?:^|\s)-\s*$", prefix)) and bool(
+            re.match(r"\s*(?:\[|\(|$)", suffix)
+        )
 
     def _season_numbers_from_text(self, title: str) -> list[int]:
         numbers: list[int] = []
