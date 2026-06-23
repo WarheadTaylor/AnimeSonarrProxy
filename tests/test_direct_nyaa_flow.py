@@ -219,6 +219,85 @@ async def test_generic_search_with_season_episode_returns_ranked_raw_results(
     ]
 
 
+@pytest.mark.asyncio
+async def test_generic_tvsearch_filters_known_seasonal_mismatches(monkeypatch):
+    """Alias fallback searches should reject releases for the wrong seasonal ep."""
+    wrong_s04e11 = make_result(
+        "[ToonsHub] That Time I Got Reincarnated as a Slime S04E11 1080p "
+        "BILI WEB-DL AAC2.0 H.265 (Tensei Shitara Slime Datta Ken, Multi-Subs)",
+        guid="https://nyaa.si/view/s04e11",
+        seeders=100,
+    )
+    wrong_fourth_09 = make_result(
+        "[Asakura] Tensei Shitara Slime Datta Ken 4th Season - 09 "
+        "[1080p WEB AAC x264] [532BC33A] | That Time I Got Reincarnated as "
+        "a Slime Season 4 | Episode 81",
+        guid="https://nyaa.si/view/fourth-09",
+        seeders=99,
+    )
+    valid_s4_10 = make_result(
+        "[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 10 (1080p) "
+        "[7FA8BA37].mkv",
+        guid="https://nyaa.si/view/s4-10",
+        seeders=10,
+    )
+    valid_fourth_10 = make_result(
+        "[Erai-raws] Tensei Shitara Slime Datta Ken 4th Season - 10 "
+        "[1080p CR WEB-DL AVC AAC][MultiSub][80510B57]",
+        guid="https://nyaa.si/view/fourth-10",
+        seeders=20,
+    )
+    ambiguous_absolute = make_result(
+        "[SubsPlease] One Piece - 1156 (1080p) [ABC123].mkv",
+        guid="https://nyaa.si/view/absolute",
+        seeders=5,
+    )
+    nyaa = RecordingNyaaClient(
+        [
+            wrong_s04e11,
+            wrong_fourth_09,
+            valid_s4_10,
+            valid_fourth_10,
+            ambiguous_absolute,
+        ]
+    )
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    results = await CoreSearchService().generic_search(
+        "Tensei Shitara Slime Datta Ken S4",
+        limit=10,
+        season=4,
+        episode=10,
+    )
+
+    assert [result.guid for result in results] == [
+        "https://nyaa.si/view/fourth-10",
+        "https://nyaa.si/view/s4-10",
+        "https://nyaa.si/view/absolute",
+    ]
+
+
+def test_parser_extracts_nonstandard_season_markers():
+    """Common Nyaa season markers should be available to fallback filtering."""
+    s4_release = release_parser.parse(
+        "[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 10 (1080p) "
+        "[7FA8BA37].mkv"
+    )
+    fourth_release = release_parser.parse(
+        "[Erai-raws] Tensei Shitara Slime Datta Ken 4th Season - 10 "
+        "[1080p CR WEB-DL AVC AAC][MultiSub][80510B57]"
+    )
+    season_release = release_parser.parse(
+        "[Asakura] Tensei Shitara Slime Datta Ken 4th Season - 10 "
+        "[1080p WEB AAC x264] | That Time I Got Reincarnated as a Slime "
+        "Season 4 | Episode 82"
+    )
+
+    assert s4_release.season_numbers == [4]
+    assert fourth_release.season_numbers == [4]
+    assert season_release.season_numbers == [4]
+
+
 def test_missing_and_malformed_nyaa_dates_are_timezone_aware_and_rankable():
     """Fallback Nyaa dates must not mix naive and aware datetimes during ranking."""
     client = NyaaClient()

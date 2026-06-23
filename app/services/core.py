@@ -9,6 +9,7 @@ from app.models import SearchResult
 from app.services.metadata import metadata_resolver
 from app.services.nyaa import nyaa_client
 from app.services.release_matcher import release_matcher
+from app.services.release_parser import release_parser
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,10 @@ class CoreSearchService:
         if season is None or episode is None:
             return self._rank(results, limit)
         if absolute_episode is None:
-            return self._rank(results, limit)
+            return self._rank(
+                self._filter_known_seasonal_mismatches(results, season, episode),
+                limit,
+            )
 
         series_title = re.sub(r"\s+\d{1,5}\s*$", "", query).strip()
         if not series_title:
@@ -140,6 +144,25 @@ class CoreSearchService:
             if (normalized := release_matcher.match_tv(result, context)) is not None
         ]
         return self._rank(matched, limit)
+
+    def _filter_known_seasonal_mismatches(
+        self, results: list[SearchResult], season: int, episode: int
+    ) -> list[SearchResult]:
+        """Drop generic results that explicitly disagree with the requested S/E."""
+        filtered = []
+        for result in results:
+            parsed = release_parser.parse(result.original_title or result.title)
+            if parsed.is_batch:
+                continue
+            if not parsed.season_numbers:
+                filtered.append(result)
+                continue
+            if season not in parsed.season_numbers:
+                continue
+            if parsed.episode_numbers and episode not in parsed.episode_numbers:
+                continue
+            filtered.append(result)
+        return filtered
 
     def _rank(self, results: list[SearchResult], limit: int) -> list[SearchResult]:
         unique: dict[str, SearchResult] = {}

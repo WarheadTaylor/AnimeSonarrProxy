@@ -179,10 +179,17 @@ class ReleaseParser:
 
     def _season_numbers_from_text(self, title: str) -> list[int]:
         numbers: list[int] = []
-        for match in re.finditer(r"\bS0*(\d{1,2})E0*\d{1,3}\b", title, re.IGNORECASE):
-            number = int(match.group(1))
-            if number not in numbers:
-                numbers.append(number)
+        patterns = [
+            r"\bS0*(\d{1,2})E0*\d{1,3}\b",
+            r"\bS0*(\d{1,2})(?=\s*[-_.]\s*\d{1,5}\b)",
+            r"\b0*(\d{1,2})(?:st|nd|rd|th)\s+Season\b",
+            r"\bSeason\s+0*(\d{1,2})\b",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, title, re.IGNORECASE):
+                number = int(match.group(1))
+                if number not in numbers:
+                    numbers.append(number)
         return numbers
 
     def _year_from_text(self, title: str) -> Optional[int]:
