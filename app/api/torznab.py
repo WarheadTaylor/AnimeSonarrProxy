@@ -77,9 +77,21 @@ async def handle_tvsearch(
         logger.warning("tvsearch for TVDB %s missing season/episode", tvdb_id)
         return create_empty_rss()
 
-    results, attrs = await core_search_service.tv_search(
-        tvdb_id, season, episode, limit + offset
-    )
+    try:
+        results, attrs = await core_search_service.tv_search(
+            tvdb_id, season, episode, limit + offset
+        )
+    except Exception as e:
+        logger.error(
+            "TV search failed for TVDB %s S%sE%s: %s",
+            tvdb_id,
+            season,
+            episode,
+            e,
+            exc_info=True,
+        )
+        return create_empty_rss()
+
     paged = results[offset : offset + limit]
     return Response(
         content=torznab_renderer.render(
@@ -105,9 +117,22 @@ async def handle_movie_search(
         logger.info("movie test request without identifiers; searching Suzume")
         query = "Suzume"
 
-    results, attrs = await core_search_service.movie_search(
-        tmdb_id, imdb_id, query, year, limit + offset
-    )
+    try:
+        results, attrs = await core_search_service.movie_search(
+            tmdb_id, imdb_id, query, year, limit + offset
+        )
+    except Exception as e:
+        logger.error(
+            "Movie search failed for TMDB %s IMDb %s query %r year %s: %s",
+            tmdb_id,
+            imdb_id,
+            query,
+            year,
+            e,
+            exc_info=True,
+        )
+        return create_empty_rss()
+
     paged = results[offset : offset + limit]
     return Response(
         content=torznab_renderer.render(
@@ -128,9 +153,21 @@ async def handle_search(
     episode: Optional[int] = None,
 ) -> Response:
     """Handle guarded generic searches."""
-    results = await core_search_service.generic_search(
-        query, limit + offset, season=season, episode=episode
-    )
+    try:
+        results = await core_search_service.generic_search(
+            query, limit + offset, season=season, episode=episode
+        )
+    except Exception as e:
+        logger.error(
+            "Generic search failed for query %r S%sE%s: %s",
+            query,
+            season,
+            episode,
+            e,
+            exc_info=True,
+        )
+        return create_empty_rss()
+
     paged = results[offset : offset + limit]
     return Response(
         content=torznab_renderer.render(paged),
