@@ -1,11 +1,12 @@
 """Sonarr API client for episode metadata lookup."""
 
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 import httpx
 
 from app.config import settings
-from app.models import EpisodeInfo
+from app.models import EpisodeInfo, SeriesMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,67 @@ class SonarrClient:
         except Exception as e:
             logger.error(f"Failed to query Sonarr for TVDB {tvdb_id}: {e}")
             return None
+
+    async def get_series_metadata_by_tvdb_id(
+        self, tvdb_id: int
+    ) -> Optional[SeriesMetadata]:
+        """Get normalized series metadata from Sonarr by TVDB ID."""
+        series = await self.get_series_by_tvdb_id(tvdb_id)
+        if not series:
+            return None
+
+        title = series.get("title")
+        if not title:
+            return None
+
+        alternate_titles = self._alternate_titles(series.get("alternateTitles"))
+        original_title = series.get("originalTitle")
+        if original_title:
+            alternate_titles.append(original_title)
+
+        imdb_id = series.get("imdbId")
+        if imdb_id and not str(imdb_id).startswith("tt"):
+            imdb_id = f"tt{imdb_id}"
+
+        return SeriesMetadata(
+            tvdb_id=series.get("tvdbId") or tvdb_id,
+            tmdb_id=series.get("tmdbId"),
+            tvmaze_id=series.get("tvMazeId"),
+            imdb_id=imdb_id,
+            title=title,
+            original_title=original_title,
+            alternate_titles=self._dedupe_titles(alternate_titles),
+            year=series.get("year"),
+            country=series.get("country"),
+            language=series.get("language")
+            if isinstance(series.get("language"), str)
+            else None,
+            source="sonarr",
+        )
+
+    def _alternate_titles(self, raw_titles: Any) -> List[str]:
+        """Normalize Sonarr alternate title shapes into plain strings."""
+        titles: List[str] = []
+        for item in raw_titles if isinstance(raw_titles, list) else []:
+            if isinstance(item, str):
+                titles.append(item)
+            elif isinstance(item, dict):
+                title = item.get("title") or item.get("name")
+                if title:
+                    titles.append(str(title))
+        return titles
+
+    def _dedupe_titles(self, titles: List[str]) -> List[str]:
+        """Deduplicate normalized titles while preserving order."""
+        seen = set()
+        unique = []
+        for title in titles:
+            cleaned = " ".join(str(title).split())
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                unique.append(cleaned)
+        return unique
 
     async def get_episodes_by_series_id(self, series_id: int) -> List[Dict[str, Any]]:
         """

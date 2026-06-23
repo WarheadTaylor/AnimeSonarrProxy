@@ -1,29 +1,14 @@
-"""Torznab API endpoints for Sonarr integration."""
+"""Torznab API endpoints backed by direct Nyaa search."""
 
 import logging
-import re
 from typing import Optional
-from fastapi import APIRouter, Query, HTTPException, Response
-from xml.etree.ElementTree import Element, SubElement, tostring
+
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.config import settings
-from app.models import TorznabQuery, SearchResult
-from app.services.mapping import mapping_service
-from app.services.query import query_service, filter_results_by_query
-from app.services.prowlarr import prowlarr_client
-from app.services.nyaa import nyaa_client
-from app.services.sonarr import sonarr_client
-from app.services.anime_db import anime_db
-from app.services.movie_mapping import movie_mapping_service
-from app.services.movie_query import movie_query_service
-
-
-def get_search_client():
-    """Get the appropriate search client based on settings."""
-    if settings.NYAA_ENABLED:
-        return nyaa_client
-    return prowlarr_client
-
+from app.models import SearchResult
+from app.services.core import core_search_service
+from app.services.torznab_renderer import torznab_renderer
 
 logger = logging.getLogger(__name__)
 
@@ -37,1117 +22,123 @@ async def torznab_api(
     tvdbid: Optional[int] = Query(None, description="TVDB ID"),
     season: Optional[int] = Query(None, description="Season number"),
     ep: Optional[int] = Query(None, description="Episode number"),
-    tmdbid: Optional[int] = Query(None, description="TMDB ID (for movies)"),
-    imdbid: Optional[str] = Query(None, description="IMDb ID (for movies)"),
-    year: Optional[int] = Query(None, description="Release year (for movies)"),
+    tmdbid: Optional[int] = Query(None, description="TMDB ID"),
+    imdbid: Optional[str] = Query(None, description="IMDb ID"),
+    year: Optional[int] = Query(None, description="Release year"),
     apikey: Optional[str] = Query(None, description="API key"),
-    limit: Optional[int] = Query(100, description="Result limit"),
-    offset: Optional[int] = Query(0, description="Result offset"),
-):
-    """
-    Main Torznab API endpoint.
-
-    Handles:
-    - caps: Return capabilities
-    - search: Generic search
-    - tvsearch: TV search with anime title mapping
-    - movie: Movie search with anime movie title mapping
-    """
-    # Handle capabilities request (no auth required per Torznab spec)
+    cat: Optional[str] = Query(None, description="Comma-separated category IDs"),
+    limit: int = Query(100, description="Result limit"),
+    offset: int = Query(0, description="Result offset"),
+) -> Response:
+    """Handle Torznab caps, TV, movie, and guarded generic searches."""
     if t == "caps":
-        return await handle_caps()
+        return handle_caps()
 
-    # Validate API key for all other requests
     if apikey != settings.API_KEY:
-        logger.debug("Invalid API key attempt")
         raise HTTPException(status_code=403, detail="Invalid API key")
 
-    # Handle TV search (main use case)
-    elif t == "tvsearch":
-        if tvdbid is None:
-            # Fall back to generic search if query string is provided
-            # But pass season info for specials detection
-            if q:
-                is_special = (season == 0) if season is not None else False
-                logger.info(
-                    f"tvsearch called without tvdbid, falling back to generic search with query: {q}{' [SPECIAL]' if is_special else ''}"
-                )
-                return await handle_search(
-                    q,
-                    limit,
-                    offset,
-                    is_special=is_special,
-                    season=season,
-                    episode=ep,
-                )
-            else:
-                # Sonarr may call tvsearch without parameters during indexer testing
-                # Return recent anime results to pass the test
-                logger.info(
-                    "tvsearch called without tvdbid or query string - returning default search for 'Frieren' for indexer test"
-                )
-                return await handle_search("Frieren", limit, offset)
+    limit = max(0, min(limit, settings.MAX_RESULTS_PER_QUERY))
+    offset = max(0, offset)
+    categories = parse_categories(cat)
 
-        if season is None or ep is None:
-            logger.warning(f"tvsearch called without season/ep for TVDB {tvdbid}")
-            # Try to search using anime titles with OVA/Special keywords
-            # This handles cases where Sonarr searches for specials without proper season/ep
-            return await handle_tvsearch_special(tvdbid, q, limit, offset)
-
-        return await handle_tvsearch(tvdbid, season, ep, limit, offset)
-
-    # Handle movie search (for Radarr)
-    elif t == "movie":
-        if not settings.ENABLE_MOVIE_SEARCH:
-            logger.warning("Movie search is disabled")
+    if t == "tvsearch":
+        return await handle_tvsearch(tvdbid, season, ep, q, limit, offset, categories)
+    if t == "movie":
+        return await handle_movie_search(
+            tmdbid, imdbid, q, year, limit, offset, categories
+        )
+    if t == "search":
+        if not q:
             return create_empty_rss()
+        return await handle_search(
+            q, limit, offset, season=season, episode=ep, categories=categories
+        )
 
-        return await handle_movie_search(tmdbid, imdbid, q, year, limit, offset)
-
-    # Handle generic search
-    elif t == "search":
-        if q is None:
-            logger.warning("search called without query")
-            return create_empty_rss()
-
-        return await handle_search(q, limit, offset)
-
-    else:
-        logger.warning(f"Unknown query type: {t}")
-        raise HTTPException(status_code=400, detail=f"Unsupported query type: {t}")
+    raise HTTPException(status_code=400, detail=f"Unsupported query type: {t}")
 
 
-async def handle_caps() -> Response:
+def handle_caps() -> Response:
     """Return Torznab capabilities."""
-    caps_xml = """<?xml version="1.0" encoding="UTF-8"?>
-<caps>
-    <server version="1.0" title="AnimeSonarrProxy" />
-    <limits max="100" default="100"/>
-    <searching>
-        <search available="yes" supportedParams="q"/>
-        <tv-search available="yes" supportedParams="q,tvdbid,season,ep"/>
-        <movie-search available="yes" supportedParams="q,tmdbid,imdbid,year"/>
-    </searching>
-    <categories>
-        <category id="2000" name="Movies">
-            <subcat id="2010" name="Movies/Foreign"/>
-            <subcat id="2020" name="Movies/Other"/>
-            <subcat id="2060" name="Movies/Anime"/>
-        </category>
-        <category id="5000" name="TV">
-            <subcat id="5070" name="Anime"/>
-        </category>
-    </categories>
-</caps>"""
+    return Response(content=torznab_renderer.caps(), media_type="application/xml")
 
-    return Response(content=caps_xml, media_type="application/xml")
+
+def parse_categories(raw_categories: Optional[str]) -> Optional[list[int]]:
+    """Parse Torznab cat parameter into category IDs."""
+    if not raw_categories:
+        return None
+
+    categories: list[int] = []
+    seen = set()
+    for raw_category in raw_categories.split(","):
+        raw_category = raw_category.strip()
+        if not raw_category:
+            continue
+        try:
+            category = int(raw_category)
+        except ValueError:
+            logger.warning("Ignoring invalid Torznab category %r", raw_category)
+            continue
+        if category in seen:
+            continue
+        seen.add(category)
+        categories.append(category)
+
+    return categories or None
 
 
 async def handle_tvsearch(
-    tvdb_id: int, season: int, episode: int, limit: int, offset: int
-) -> Response:
-    """
-    Handle TV search with anime title mapping.
-
-    This is the core functionality - maps TVDB to anime titles and searches.
-    """
-    logger.info(f"TV search: TVDB {tvdb_id} S{season:02d}E{episode:02d}")
-
-    # Get anime mapping
-    mapping = await mapping_service.get_mapping(tvdb_id)
-
-    if mapping is None:
-        logger.warning(
-            f"No mapping found for TVDB {tvdb_id}; trying Sonarr metadata fallback"
-        )
-        return await _search_using_sonarr_episode_metadata(
-            tvdb_id, season, episode, limit, offset
-        )
-
-    # Search using multiple queries
-    try:
-        results = await query_service.search_anime(mapping, season, episode)
-        logger.info(
-            f"Found {len(results)} results for TVDB {tvdb_id} S{season:02d}E{episode:02d}"
-        )
-
-        # Apply limit and offset
-        paginated_results = results[offset : offset + limit]
-        absolute_episode = _extract_expected_absolute_episode(results)
-        rss_results = _normalize_result_titles_for_sonarr(
-            paginated_results,
-            series_title=mapping.get_search_titles()[0],
-            season=season,
-            episode=episode,
-            absolute_episode=absolute_episode,
-        )
-
-        # Convert to Torznab RSS
-        rss_xml = create_torznab_rss(
-            rss_results, tvdbid=tvdb_id, season=season, episode=episode
-        )
-
-        return Response(content=rss_xml, media_type="application/xml")
-
-    except Exception as e:
-        logger.error(f"Search failed for TVDB {tvdb_id}: {e}", exc_info=True)
-        return create_empty_rss()
-
-
-async def handle_tvsearch_special(
-    tvdb_id: int, query: Optional[str], limit: int, offset: int
-) -> Response:
-    """
-    Handle TV search when season/ep is not provided.
-
-    This can happen in two scenarios:
-    1. Sonarr searching for specials (OVAs, movies) - query might be "01", "1", etc.
-    2. Sonarr searching with absolute episode number - query is the episode number
-
-    We detect which case it is using Sonarr API (if configured) and search accordingly.
-    """
-    import asyncio
-
-    logger.info(f"TV search without season/ep: TVDB {tvdb_id} query='{query}'")
-
-    # Get anime mapping first (needed for both cases)
-    mapping = await mapping_service.get_mapping(tvdb_id)
-
-    if mapping is None:
-        logger.warning(
-            f"No mapping found for TVDB {tvdb_id}; trying Sonarr metadata fallback"
-        )
-        return await _search_special_using_sonarr_metadata(
-            tvdb_id, query, limit, offset
-        )
-
-    # Get search titles from mapping
-    titles = mapping.get_search_titles()
-    if not titles:
-        logger.warning(f"No search titles for TVDB {tvdb_id}")
-        return create_empty_rss()
-
-    primary_title = titles[0]
-
-    # Check if query looks like an episode number
-    is_potential_episode_num = (
-        query and query.strip().isdigit() and int(query.strip()) > 0
-    )
-
-    if is_potential_episode_num:
-        query_num = int(query.strip())
-
-        # Try Sonarr lookup if configured
-        if sonarr_client.is_configured():
-            # Key insight: Sonarr often sends the episode number within the season
-            # (e.g., q=01 for S2E01), not the absolute episode number.
-            # Find ALL wanted episodes with this episode number (could be multiple seasons).
-            wanted_episodes = await sonarr_client.get_wanted_episodes_by_episode_number(
-                tvdb_id, query_num
-            )
-
-            if wanted_episodes:
-                # Get absolute episode numbers from all wanted episodes
-                absolute_eps = [
-                    ep.absolute_episode_number
-                    for ep in wanted_episodes
-                    if ep.absolute_episode_number is not None
-                ]
-
-                # Check if any are specials
-                has_specials = any(ep.is_special for ep in wanted_episodes)
-
-                if absolute_eps:
-                    ep_info = ", ".join(
-                        f"S{ep.season_number:02d}E{ep.episode_number:02d}(abs={ep.absolute_episode_number})"
-                        for ep in wanted_episodes
-                    )
-                    logger.info(f"Resolved q={query_num} to wanted episodes: {ep_info}")
-
-                    if has_specials:
-                        # If any are specials, search for specials
-                        return await _search_for_special(
-                            tvdb_id, titles, absolute_eps[0], limit, offset
-                        )
-                    else:
-                        # Search for all absolute episode numbers
-                        return await _search_for_absolute_episodes(
-                            tvdb_id,
-                            titles,
-                            absolute_eps,
-                            limit,
-                            offset,
-                            episode_metadata={
-                                ep.absolute_episode_number: (
-                                    ep.season_number,
-                                    ep.episode_number,
-                                )
-                                for ep in wanted_episodes
-                                if ep.absolute_episode_number is not None
-                            },
-                        )
-
-            # Fallback: Try as absolute episode number
-            episode_info = await sonarr_client.get_episode_by_absolute_number(
-                tvdb_id, query_num
-            )
-
-            if episode_info:
-                if episode_info.is_special:
-                    logger.info(
-                        f"Query {query_num} is absolute episode, special "
-                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
-                    )
-                    return await _search_for_special(
-                        tvdb_id, titles, query_num, limit, offset
-                    )
-                else:
-                    logger.info(
-                        f"Query {query_num} is absolute episode, regular "
-                        f"(S{episode_info.season_number:02d}E{episode_info.episode_number:02d})"
-                    )
-                    return await _search_for_absolute_episodes(
-                        tvdb_id,
-                        titles,
-                        [query_num],
-                        limit,
-                        offset,
-                        episode_metadata={
-                            query_num: (
-                                episode_info.season_number,
-                                episode_info.episode_number,
-                            )
-                        },
-                    )
-            else:
-                # Episode not found by either method - use query as-is
-                logger.info(
-                    f"Episode {query_num} not found in Sonarr, "
-                    f"treating as absolute episode search"
-                )
-                return await _search_for_absolute_episodes(
-                    tvdb_id, titles, [query_num], limit, offset
-                )
-        else:
-            # Sonarr not configured - default to treating query as absolute episode
-            logger.info(
-                f"Sonarr not configured, treating query '{query}' as absolute episode {query_num}"
-            )
-            return await _search_for_absolute_episodes(
-                tvdb_id, titles, [query_num], limit, offset
-            )
-
-    # Non-numeric query or no query - treat as special search
-    logger.info(f"Searching for specials using title: {primary_title}")
-    return await _search_for_special(tvdb_id, titles, None, limit, offset)
-
-
-async def _search_using_sonarr_episode_metadata(
-    tvdb_id: int, season: int, episode: int, limit: int, offset: int
-) -> Response:
-    """Search by Sonarr episode metadata when local anime mapping is missing."""
-    if not sonarr_client.is_configured():
-        logger.warning(
-            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: client not configured"
-        )
-        return create_empty_rss()
-
-    episode_info = await sonarr_client.get_episode_by_season_episode(
-        tvdb_id, season, episode
-    )
-    if episode_info is None:
-        logger.warning(
-            f"Sonarr metadata fallback failed for TVDB {tvdb_id} S{season:02d}E{episode:02d}"
-        )
-        return create_empty_rss()
-
-    absolute_episode = episode_info.absolute_episode_number or episode
-    logger.info(
-        f"Sonarr metadata fallback resolved TVDB {tvdb_id} "
-        f"S{season:02d}E{episode:02d} -> title='{episode_info.series_title}', "
-        f"absolute={absolute_episode}"
-    )
-
-    return await _search_for_absolute_episodes(
-        tvdb_id,
-        [episode_info.series_title],
-        [absolute_episode],
-        limit,
-        offset,
-        episode_metadata={
-            absolute_episode: (
-                episode_info.season_number,
-                episode_info.episode_number,
-            )
-        },
-    )
-
-
-async def _search_special_using_sonarr_metadata(
-    tvdb_id: int, query: Optional[str], limit: int, offset: int
-) -> Response:
-    """Search a no-season TVDB query using Sonarr metadata when mapping is missing."""
-    if not (query and query.strip().isdigit()):
-        logger.warning(
-            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: query is not numeric"
-        )
-        return create_empty_rss()
-
-    if not sonarr_client.is_configured():
-        logger.warning(
-            f"Sonarr metadata fallback unavailable for TVDB {tvdb_id}: client not configured"
-        )
-        return create_empty_rss()
-
-    query_num = int(query.strip())
-    episode_info = await sonarr_client.get_episode_by_absolute_number(
-        tvdb_id, query_num
-    )
-    if episode_info is None:
-        logger.warning(
-            f"Sonarr metadata fallback failed for TVDB {tvdb_id} absolute episode {query_num}"
-        )
-        return create_empty_rss()
-
-    logger.info(
-        f"Sonarr metadata fallback resolved TVDB {tvdb_id} absolute {query_num} -> "
-        f"title='{episode_info.series_title}', "
-        f"S{episode_info.season_number:02d}E{episode_info.episode_number:02d}"
-    )
-
-    if episode_info.is_special:
-        return await _search_for_special(
-            tvdb_id,
-            [episode_info.series_title],
-            query_num,
-            limit,
-            offset,
-        )
-
-    return await _search_for_absolute_episodes(
-        tvdb_id,
-        [episode_info.series_title],
-        [query_num],
-        limit,
-        offset,
-        episode_metadata={
-            query_num: (
-                episode_info.season_number,
-                episode_info.episode_number,
-            )
-        },
-    )
-
-
-def _filter_season_titles(titles: list[str]) -> list[str]:
-    """
-    Filter out season-specific title variants to avoid polluting searches.
-
-    Titles like "Bakuman S2", "Bakuman S3", "Bakuman Season 2" will return
-    results for that specific season, which is wrong when searching for
-    a specific episode by absolute number.
-
-    Args:
-        titles: List of title variants
-
-    Returns:
-        Filtered list with season-specific titles removed
-    """
-    import re
-
-    # Pattern to match season indicators
-    # Matches: S2, S3, S02, S03, Season 2, Season 3, 2nd Season, 3rd Season
-    season_pattern = re.compile(
-        r"\b(S\d+|Season\s*\d+|\d+(st|nd|rd|th)\s*Season)\b", re.IGNORECASE
-    )
-
-    filtered = []
-    removed = []
-
-    for title in titles:
-        if season_pattern.search(title):
-            removed.append(title)
-        else:
-            filtered.append(title)
-
-    if removed:
-        logger.debug(f"Filtered out season-specific titles: {removed}")
-
-    # Always return at least one title (the first one, even if it has season info)
-    if not filtered and titles:
-        filtered = [titles[0]]
-
-    return filtered
-
-
-async def _search_for_absolute_episodes(
-    tvdb_id: int,
-    titles: list[str],
-    absolute_eps: list[int],
-    limit: int,
-    offset: int,
-    episode_metadata: Optional[dict[int, tuple[int, int]]] = None,
-) -> Response:
-    """
-    Search for regular episodes using absolute episode numbers.
-
-    Handles multiple episode numbers (e.g., when both S02E01 and S03E01 are wanted).
-    Uses Nyaa's | (OR) operator to combine titles and episodes into a single query.
-    """
-    logger.info(f"Absolute episode search: TVDB {tvdb_id} episodes {absolute_eps}")
-
-    # Filter out season-specific titles to avoid wrong results
-    filtered_titles = _filter_season_titles(titles)
-
-    # Limit titles to prevent overly complex queries
-    search_titles = filtered_titles[:3]
-
-    search_client = get_search_client()
-
-    # Use combined query if Nyaa client supports it (search_multi method)
-    if hasattr(search_client, "search_multi"):
-        # Build a single combined query: ("Title A"|"Title B") (ep1|ep2|ep3)
-        logger.info(
-            f"Absolute episode search: combined query with titles={search_titles}, episodes={absolute_eps}"
-        )
-        all_results = await search_client.search_multi(
-            titles=search_titles, episodes=absolute_eps, limit=limit
-        )
-    else:
-        # Fallback for Prowlarr client: use individual queries
-        import asyncio
-
-        episode_queries = []
-        for ep in absolute_eps:
-            for title in search_titles:
-                episode_queries.append(f"{title} {ep}")
-
-        # Cap total queries to prevent excessive API calls
-        episode_queries = episode_queries[:8]
-        logger.info(f"Absolute episode search queries (fallback): {episode_queries}")
-
-        tasks = [search_client.search(q, limit=limit) for q in episode_queries]
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_results = []
-        for results in results_lists:
-            if isinstance(results, Exception):
-                logger.error(f"Query failed: {results}")
-                continue
-            all_results.extend(results)
-
-    # Deduplicate by GUID
-    seen_guids = set()
-    unique_results = []
-    for result in all_results:
-        if result.guid not in seen_guids:
-            seen_guids.add(result.guid)
-            unique_results.append(result)
-
-    # Filter for relevance
-    primary_title = titles[0]
-    relevant_results = filter_results_by_query(unique_results, primary_title)
-    logger.info(
-        f"Absolute episode search: {len(unique_results)} -> {len(relevant_results)} relevant results"
-    )
-
-    episode_results = query_service.filter_by_episode_numbers(
-        relevant_results, absolute_eps
-    )
-    if len(episode_results) != len(relevant_results):
-        logger.info(
-            f"Absolute episode filter: {len(relevant_results)} -> {len(episode_results)} results"
-        )
-
-    # Sort by seeders (descending) then pub_date (descending)
-    episode_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-    paginated_results = episode_results[offset : offset + limit]
-
-    season = None
-    episode = None
-    if episode_metadata and len(episode_metadata) == 1:
-        season, episode = next(iter(episode_metadata.values()))
-
-    rss_results = _normalize_result_titles_for_sonarr(
-        paginated_results,
-        series_title=primary_title,
-        season=season,
-        episode=episode,
-        absolute_episode=absolute_eps[0] if len(absolute_eps) == 1 else None,
-    )
-
-    rss_xml = create_torznab_rss(
-        rss_results, tvdbid=tvdb_id, season=season, episode=episode
-    )
-    return Response(content=rss_xml, media_type="application/xml")
-
-
-async def _search_for_special(
-    tvdb_id: int,
-    titles: list[str],
-    episode_num: Optional[int],
-    limit: int,
-    offset: int,
-) -> Response:
-    """
-    Search for specials/OVAs/movies.
-
-    Uses Nyaa's | (OR) operator to combine OVA/Special/Movie keywords into a single query.
-    """
-    primary_title = titles[0]
-    logger.info(f"Special search: TVDB {tvdb_id} title='{primary_title}'")
-
-    search_client = get_search_client()
-
-    # Define special keywords
-    special_keywords = ["OVA", "Special", "OAD", "Movie"]
-
-    # Use combined query if Nyaa client supports it
-    if hasattr(search_client, "search_multi"):
-        # Build a single combined query: "Title" (OVA|Special|OAD|Movie)
-        # Optionally include episode number if provided
-        episodes = [episode_num] if episode_num is not None else None
-
-        logger.info(
-            f"Special search: combined query with title='{primary_title}', "
-            f"keywords={special_keywords}, episode={episode_num}"
-        )
-        all_results = await search_client.search_multi(
-            titles=[primary_title],
-            keywords=special_keywords,
-            episodes=episodes,
-            limit=limit,
-        )
-
-        # Also do a bare title search to catch differently labeled specials
-        bare_results = await search_client.search(primary_title, limit=limit)
-        all_results.extend(bare_results)
-    else:
-        # Fallback for Prowlarr client: use individual queries
-        import asyncio
-
-        special_queries = [
-            f"{primary_title} OVA",
-            f"{primary_title} Special",
-            f"{primary_title} OAD",
-            f"{primary_title} Movie",
-        ]
-
-        if episode_num is not None:
-            special_queries.extend(
-                [
-                    f"{primary_title} OVA {episode_num}",
-                    f"{primary_title} Special {episode_num}",
-                ]
-            )
-
-        special_queries.append(primary_title)
-        logger.info(f"Special search queries (fallback): {special_queries}")
-
-        tasks = [search_client.search(q, limit=limit) for q in special_queries]
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_results = []
-        for results in results_lists:
-            if isinstance(results, Exception):
-                logger.error(f"Query failed: {results}")
-                continue
-            all_results.extend(results)
-
-    # Deduplicate by GUID
-    seen_guids = set()
-    unique_results = []
-    for result in all_results:
-        if result.guid not in seen_guids:
-            seen_guids.add(result.guid)
-            unique_results.append(result)
-
-    # Filter for relevance - result should contain the anime title
-    relevant_results = filter_results_by_query(unique_results, primary_title)
-    logger.info(
-        f"Special search: {len(unique_results)} -> {len(relevant_results)} relevant results"
-    )
-
-    # Sort by seeders (descending) then pub_date (descending)
-    relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-    paginated_results = relevant_results[offset : offset + limit]
-
-    rss_xml = create_torznab_rss(paginated_results, tvdbid=tvdb_id)
-    return Response(content=rss_xml, media_type="application/xml")
-
-
-async def handle_search(
-    query: str,
-    limit: int,
-    offset: int,
-    is_special: bool = False,
-    season: Optional[int] = None,
-    episode: Optional[int] = None,
-) -> Response:
-    """
-    Handle generic search with smart query parsing.
-
-    Detects concatenated title queries from Sonarr and splits them intelligently.
-    For specials (season 0), adds OVA/Special/Movie keywords to the search.
-    """
-    logger.info(f"Generic search: {query}")
-
-    try:
-        # Detect Season 0 queries - Sonarr appends "00" for season 0 episode searches
-        # e.g., "Kaguya sama wa Kokurasetai 00" -> should search for OVA/Special/Movie
-        if not is_special and _is_season_zero_query(query):
-            is_special = True
-            query = _strip_season_zero_suffix(query)
-            logger.info(f"Detected Season 0 query - stripped to: {query} [SPECIAL]")
-
-        # Parse the query to get a clean title
-        search_queries = _parse_concatenated_query(query)
-        base_query = search_queries[0] if search_queries else query
-
-        # For specials, search with OVA/Special/Movie keywords
-        if is_special:
-            logger.info(
-                f"Special detected - searching with OVA/Special/OAD/Movie keywords"
-            )
-
-            search_client = get_search_client()
-            special_keywords = ["OVA", "Special", "OAD", "Movie"]
-
-            # Use combined query if Nyaa client supports it
-            if hasattr(search_client, "search_multi"):
-                logger.info(
-                    f"Special search: combined query with title='{base_query}', keywords={special_keywords}"
-                )
-                all_results = await search_client.search_multi(
-                    titles=[base_query], keywords=special_keywords, limit=limit
-                )
-                # Also do a bare title search
-                bare_results = await search_client.search(base_query, limit=limit)
-                all_results.extend(bare_results)
-            else:
-                # Fallback for Prowlarr client
-                import asyncio
-
-                special_queries = [
-                    f"{base_query} OVA",
-                    f"{base_query} Special",
-                    f"{base_query} OAD",
-                    f"{base_query} Movie",
-                    base_query,
-                ]
-                tasks = [search_client.search(q, limit=limit) for q in special_queries]
-                results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-
-                all_results = []
-                for results in results_lists:
-                    if isinstance(results, Exception):
-                        logger.error(f"Query failed: {results}")
-                        continue
-                    all_results.extend(results)
-
-            # Deduplicate by GUID
-            seen_guids = set()
-            unique_results = []
-            for result in all_results:
-                if result.guid not in seen_guids:
-                    seen_guids.add(result.guid)
-                    unique_results.append(result)
-
-            # Filter out irrelevant results
-            relevant_results = filter_results_by_query(unique_results, query)
-            logger.info(
-                f"Relevance filter: {len(unique_results)} -> {len(relevant_results)} results"
-            )
-
-            # Sort and paginate
-            relevant_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-            paginated_results = relevant_results[offset : offset + limit]
-        else:
-            # Regular search - single query
-            search_client = get_search_client()
-            results = await search_client.search(base_query, limit=limit)
-
-            # Filter out irrelevant results that don't match the search query
-            relevant_results = filter_results_by_query(results, query)
-            logger.info(
-                f"Relevance filter: {len(results)} -> {len(relevant_results)} results"
-            )
-
-            episode_num = _extract_trailing_episode_number(query)
-            if episode_num is not None:
-                episode_results = query_service.filter_by_episode_numbers(
-                    relevant_results, [episode_num]
-                )
-                if len(episode_results) != len(relevant_results):
-                    logger.info(
-                        f"Generic episode filter: {len(relevant_results)} -> {len(episode_results)} results"
-                    )
-                relevant_results = episode_results
-
-            if episode_num is not None:
-                rss_results = _normalize_result_titles_for_sonarr(
-                    relevant_results,
-                    series_title=_strip_trailing_episode_number(query),
-                    season=season,
-                    episode=episode,
-                    absolute_episode=episode_num,
-                )
-            else:
-                logger.info(
-                    "Sonarr title normalizer skipped: generic search lacks absolute episode number "
-                    f"(query='{query}', season={season}, episode={episode})"
-                )
-                rss_results = relevant_results
-
-            # Sort by seeders (descending) then pub_date (descending, newer first)
-            rss_results.sort(key=lambda x: (x.seeders, x.pub_date), reverse=True)
-            paginated_results = rss_results[offset : offset + limit]
-
-        rss_xml = create_torznab_rss(paginated_results, season=season, episode=episode)
-        return Response(content=rss_xml, media_type="application/xml")
-
-    except Exception as e:
-        logger.error(f"Generic search failed: {e}", exc_info=True)
-        return create_empty_rss()
-
-
-def _extract_trailing_episode_number(query: str) -> Optional[int]:
-    """Extract a trailing absolute episode number from a generic title query."""
-    match = re.search(r"(?:^|\s)(\d{1,5})\s*$", query or "")
-    if not match:
-        return None
-
-    episode_num = int(match.group(1))
-    if episode_num <= 0:
-        return None
-
-    return episode_num
-
-
-def _strip_trailing_episode_number(query: str) -> str:
-    """Remove a trailing episode number from a generic title query."""
-    return re.sub(r"\s+\d{1,5}\s*$", "", query or "").strip()
-
-
-def _parse_concatenated_query(query: str) -> list[str]:
-    """
-    Parse a potentially concatenated query string into individual search terms.
-
-    Sonarr sometimes sends queries like:
-    "Kaguya sama wa Kokurasetai Tensai tachi no Renai Zunousen ABCs of Men and Women"
-
-    Now that Prowlarr search is working properly, we just need to extract
-    a clean primary title rather than generating multiple fragmented queries.
-    """
-    # If query is short, just use it as-is
-    if len(query) < 50:
-        return [query]
-
-    words = query.split()
-
-    # Strategy 1: Try to find the anime in our database first
-    # Try with progressively shorter prefixes of the query
-    for num_words in [6, 5, 4, 3]:
-        if len(words) >= num_words:
-            prefix = " ".join(words[:num_words])
-            db_titles = anime_db.get_search_titles_for_query(prefix)
-            if db_titles:
-                logger.info(
-                    f"Found anime in database for query prefix '{prefix}': {db_titles}"
-                )
-                # Return just the primary title, not all variations
-                return [db_titles[0]]
-
-    # Strategy 2: For Japanese titles with particles, extract up to the particle + a few words
-    japanese_particles = ["wa", "no", "ga", "ni"]
-    for i, word in enumerate(words[:8]):
-        if word.lower() in japanese_particles:
-            # Include words after the particle to complete the title
-            end_idx = min(i + 4, len(words))
-            japanese_title = " ".join(words[:end_idx])
-            return [japanese_title]
-
-    # Strategy 3: Just use the first 4-5 words as the search term
-    return [" ".join(words[:5])]
-
-
-def _is_season_zero_query(query: str) -> bool:
-    """
-    Detect if query is a Season 0 (special) episode search.
-
-    Sonarr may append episode numbers like "00" for Season 0 specials.
-    We need to be careful not to match regular episode numbers.
-
-    Rules:
-    - " 00" at end -> Season 0 special episode 0
-    - " 0X" at end WITH a season indicator (S1, S2, etc.) -> NOT Season 0
-    - " 0X" at end WITHOUT season indicator -> Ambiguous, assume NOT Season 0
-      (regular episode numbers are more common than specials)
-
-    e.g., "Kaguya sama 00" -> Season 0 (special)
-          "Bakuman S2 01" -> NOT Season 0 (regular S2E01)
-          "Bakuman 01" -> NOT Season 0 (probably regular episode)
-    """
-    # Only match " 00" specifically - this is clearly special episode 0
-    # Other patterns like " 01", " 02" are too ambiguous and often wrong
-    if re.search(r"\s+00$", query):
-        return True
-
-    # Don't match queries with season indicators - those are regular episodes
-    # E.g., "Bakuman S2 01" should NOT be treated as Season 0
-    if re.search(r"\bS\d+\b", query, re.IGNORECASE):
-        return False
-
-    # For other " 0X" patterns, be conservative - assume NOT Season 0
-    # The user searching for "Bakuman 01" probably wants episode 1, not special 1
-    return False
-
-
-def _strip_season_zero_suffix(query: str) -> str:
-    """
-    Remove the Season 0 episode number suffix from query.
-
-    "Kaguya sama 00" -> "Kaguya sama"
-    "Attack on Titan 01" -> "Attack on Titan"
-    """
-    return re.sub(r"\s+0\d$", "", query).strip()
-
-
-def _normalize_result_titles_for_sonarr(
-    results: list[SearchResult],
-    series_title: str,
+    tvdb_id: Optional[int],
     season: Optional[int],
     episode: Optional[int],
-    absolute_episode: Optional[int] = None,
-) -> list[SearchResult]:
-    """
-    Rewrite release titles into a Sonarr-friendly SxxEyy format for beta testing.
-
-    Sonarr makes release decisions from the RSS title parser. Torznab metadata like
-    season and episode is useful context, but title parsing still drives matching.
-    """
-    if not settings.SONARR_TITLE_NORMALIZER_ENABLED:
-        logger.info(
-            f"Sonarr title normalizer skipped: disabled "
-            f"(results={len(results)}, series='{series_title}', season={season}, episode={episode})"
-        )
-        return results
-
-    if season is None or episode is None or not series_title:
-        logger.info(
-            f"Sonarr title normalizer skipped: missing metadata "
-            f"(results={len(results)}, series='{series_title}', season={season}, episode={episode})"
-        )
-        return results
-
-    normalized = []
-    changed_count = 0
-    sample_changes = []
-    for result in results:
-        normalized_title = _build_sonarr_release_title(
-            original_title=result.title,
-            series_title=series_title,
-            season=season,
-            episode=episode,
-            absolute_episode=absolute_episode,
-        )
-        if normalized_title != result.title:
-            changed_count += 1
-            if len(sample_changes) < 3:
-                sample_changes.append(f"'{result.title}' -> '{normalized_title}'")
-        normalized.append(result.model_copy(update={"title": normalized_title}))
-
-    logger.info(
-        f"Sonarr title normalizer applied: {changed_count}/{len(results)} titles rewritten "
-        f"(series='{series_title}', S{season:02d}E{episode:02d}, absolute={absolute_episode})"
-    )
-    for sample_change in sample_changes:
-        logger.info(f"Sonarr title normalizer sample: {sample_change}")
-
-    return normalized
-
-
-def _build_sonarr_release_title(
-    original_title: str,
-    series_title: str,
-    season: int,
-    episode: int,
-    absolute_episode: Optional[int] = None,
-) -> str:
-    """Build a canonical release title that Sonarr's parser should recognize."""
-    release_group = _extract_release_group(original_title)
-    metadata_suffix = _extract_release_metadata_suffix(
-        original_title, season, episode, absolute_episode
-    )
-    quality = _extract_quality_tag(original_title) if not metadata_suffix else None
-    revision = _extract_revision_tag(original_title)
-
-    title_parts = [f"{series_title} - S{season:02d}E{episode:02d}"]
-    if absolute_episode:
-        title_parts.append(str(absolute_episode))
-
-    normalized_title = " - ".join(title_parts)
-    if revision:
-        normalized_title = f"{normalized_title}{revision}"
-    if metadata_suffix:
-        normalized_title = f"{normalized_title} {metadata_suffix}"
-    elif quality:
-        normalized_title = f"{normalized_title} ({quality})"
-    if release_group:
-        normalized_title = f"[{release_group}] {normalized_title}"
-
-    return normalized_title
-
-
-def _strip_leading_release_group(title: str) -> str:
-    """Remove a leading bracketed release group from a release title."""
-    return re.sub(r"^\[[^\]]+\]\s+", "", title or "", count=1).strip()
-
-
-def _extract_release_metadata_suffix(
-    title: str,
-    season: int,
-    episode: int,
-    absolute_episode: Optional[int] = None,
-) -> str:
-    """Extract codec, source, audio, subtitle, and other trailing release metadata."""
-    title_without_group = _strip_leading_release_group(title)
-    candidate_patterns = [
-        rf"\bS0*{season}E0*{episode}(?:v\d+)?\b",
-        rf"\b{episode}(?:v\d+)?\b",
-    ]
-    if absolute_episode:
-        candidate_patterns.insert(
-            1, rf"(?<![A-Za-z0-9])(?:EP)?{absolute_episode}(?:v\d+)?(?![A-Za-z0-9])"
-        )
-
-    for pattern in candidate_patterns:
-        match = re.search(pattern, title_without_group, re.IGNORECASE)
-        if not match:
-            continue
-
-        suffix = title_without_group[match.end() :].strip()
-        return re.sub(r"^(?:[-–—_.]\s*)+", "", suffix).strip()
-
-    return ""
-
-
-def _extract_release_group(title: str) -> Optional[str]:
-    """Extract a leading release group from a release title."""
-    match = re.match(r"^\[([^\]]+)\]\s+", title or "")
-    if not match:
-        return None
-
-    return match.group(1).strip()
-
-
-def _extract_quality_tag(title: str) -> Optional[str]:
-    """Extract compact quality metadata for normalized release titles."""
-    parts = []
-
-    resolution = re.search(r"\b(2160p|1080p|720p|480p)\b", title or "", re.IGNORECASE)
-    if resolution:
-        parts.append(resolution.group(1))
-
-    source = re.search(
-        r"\b(BD\s*Remux|BluRay|BDRip|WEB[-\s]?DL|WEBRip|HDTV|SDTV)\b",
-        title or "",
-        re.IGNORECASE,
-    )
-    if source:
-        parts.append(re.sub(r"\s+", " ", source.group(1)).replace(" ", "-"))
-
-    if not parts:
-        return None
-
-    return " ".join(dict.fromkeys(parts))
-
-
-def _extract_revision_tag(title: str) -> str:
-    """Extract v2-style release revision suffixes."""
-    match = re.search(r"(?<![a-z0-9])(v\d+)(?![a-z0-9])", title or "", re.IGNORECASE)
-    if not match:
-        return ""
-
-    return match.group(1).lower()
-
-
-def _extract_expected_absolute_episode(results: list[SearchResult]) -> Optional[int]:
-    """Infer an absolute episode number from already-filtered result titles."""
-    for result in results:
-        match = re.search(
-            r"(?<!\d)(?:ep|episode)?\s*(\d{3,5})(?:v\d+)?(?!\d)",
-            result.title,
-            re.IGNORECASE,
-        )
-        if match:
-            return int(match.group(1))
-
-    return None
-
-
-def create_torznab_rss(
-    results: list[SearchResult],
-    tvdbid: Optional[int] = None,
-    season: Optional[int] = None,
-    episode: Optional[int] = None,
-) -> str:
-    """Create Torznab-compliant RSS XML from search results."""
-    rss = Element("rss", version="2.0")
-    rss.set("xmlns:atom", "http://www.w3.org/2005/Atom")
-    rss.set("xmlns:torznab", "http://torznab.com/schemas/2015/feed")
-
-    channel = SubElement(rss, "channel")
-    SubElement(channel, "title").text = "AnimeSonarrProxy"
-    SubElement(channel, "description").text = "Anime Torznab Proxy for Sonarr"
-    SubElement(channel, "link").text = f"{settings.HOST}:{settings.PORT}"
-
-    for result in results:
-        item = SubElement(channel, "item")
-
-        SubElement(item, "title").text = result.title
-        SubElement(item, "guid").text = result.guid
-        SubElement(item, "link").text = result.link
-        # Sonarr uses <comments> element for the clickable info/details page link
-        if result.info_url:
-            SubElement(item, "comments").text = result.info_url
-        SubElement(item, "pubDate").text = result.pub_date.strftime(
-            "%a, %d %b %Y %H:%M:%S +0000"
-        )
-
-        # Torznab attributes
-        SubElement(item, "torznab:attr", name="size", value=str(result.size))
-        SubElement(item, "torznab:attr", name="seeders", value=str(result.seeders))
-        SubElement(item, "torznab:attr", name="peers", value=str(result.peers))
-
-        # Add downloadvolumefactor and uploadvolumefactor (required by some clients)
-        SubElement(item, "torznab:attr", name="downloadvolumefactor", value="1")
-        SubElement(item, "torznab:attr", name="uploadvolumefactor", value="1")
-
-        # Categories - use actual categories from the result
-        for category in result.categories:
-            SubElement(item, "torznab:attr", name="category", value=str(category))
-
-        # Add TVDB metadata if available
-        if tvdbid:
-            SubElement(item, "torznab:attr", name="tvdbid", value=str(tvdbid))
-        if season is not None:
-            SubElement(item, "torznab:attr", name="season", value=str(season))
-        if episode is not None:
-            SubElement(item, "torznab:attr", name="episode", value=str(episode))
-        if settings.TORZNAB_DEFAULT_LANGUAGE:
-            SubElement(
-                item,
-                "torznab:attr",
-                name="language",
-                value=settings.TORZNAB_DEFAULT_LANGUAGE,
+    query: Optional[str],
+    limit: int,
+    offset: int,
+    categories: Optional[list[int]] = None,
+) -> Response:
+    """Handle a Sonarr TV search."""
+    if tvdb_id is None:
+        if query:
+            return await handle_search(
+                query,
+                limit,
+                offset,
+                season=season,
+                episode=episode,
+                categories=categories,
             )
+        logger.info(
+            "tvsearch test request without identifiers; searching latest selected category releases"
+        )
+        return await handle_search("", limit, offset, categories=categories)
 
-        # Enclosure (download link) - always use the actual download URL
-        SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
+    if season is None or episode is None:
+        logger.warning("tvsearch for TVDB %s missing season/episode", tvdb_id)
+        return create_empty_rss()
 
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(
-        rss, encoding="unicode"
+    try:
+        results, attrs = await core_search_service.tv_search(
+            tvdb_id, season, episode, limit + offset, categories=categories
+        )
+    except Exception as e:
+        logger.error(
+            "TV search failed for TVDB %s S%sE%s: %s",
+            tvdb_id,
+            season,
+            episode,
+            e,
+            exc_info=True,
+        )
+        return create_empty_rss()
+
+    paged = results[offset : offset + limit]
+    return Response(
+        content=torznab_renderer.render(
+            paged,
+            tvdb_id=attrs.get("tvdb_id") if attrs else tvdb_id,
+            season=attrs.get("season") if attrs else season,
+            episode=attrs.get("episode") if attrs else episode,
+        ),
+        media_type="application/xml",
     )
 
 
@@ -1158,180 +149,91 @@ async def handle_movie_search(
     year: Optional[int],
     limit: int,
     offset: int,
+    categories: Optional[list[int]] = None,
 ) -> Response:
-    """
-    Handle movie search for Radarr integration.
+    """Handle a Radarr movie search."""
+    if tmdb_id is None and imdb_id is None and not query:
+        logger.info("movie test request without identifiers; searching Suzume")
+        query = "Suzume"
 
-    Supports:
-    - TMDB ID lookup (primary)
-    - IMDb ID lookup (fallback)
-    - Title query (fallback)
-    """
-    logger.info(
-        f"Movie search: TMDB={tmdb_id}, IMDb={imdb_id}, query='{query}', year={year}"
+    try:
+        results, attrs = await core_search_service.movie_search(
+            tmdb_id, imdb_id, query, year, limit + offset, categories=categories
+        )
+    except Exception as e:
+        logger.error(
+            "Movie search failed for TMDB %s IMDb %s query %r year %s: %s",
+            tmdb_id,
+            imdb_id,
+            query,
+            year,
+            e,
+            exc_info=True,
+        )
+        return create_empty_rss()
+
+    paged = results[offset : offset + limit]
+    return Response(
+        content=torznab_renderer.render(
+            paged,
+            tmdb_id=attrs.get("tmdb_id") if attrs else tmdb_id,
+            imdb_id=attrs.get("imdb_id") if attrs else imdb_id,
+            year=attrs.get("year") if attrs else year,
+        ),
+        media_type="application/xml",
     )
 
-    # Try TMDB ID first (Radarr's preferred method)
-    if tmdb_id is not None:
-        mapping = await movie_mapping_service.get_mapping(tmdb_id)
-        if mapping:
-            logger.info(
-                f"Found movie mapping for TMDB {tmdb_id}: {mapping.titles.romaji or mapping.titles.english}"
-            )
-            return await _search_movie_by_mapping(
-                mapping, year, limit, offset, tmdb_id=tmdb_id
-            )
-        else:
-            logger.warning(f"No mapping found for TMDB {tmdb_id}")
 
-    # Try IMDb ID if TMDB lookup failed or wasn't provided
-    if imdb_id is not None:
-        # Normalize IMDb ID format (ensure it starts with 'tt')
-        if not imdb_id.startswith("tt"):
-            imdb_id = f"tt{imdb_id}"
-
-        mapping = await movie_mapping_service.get_mapping_by_imdb(imdb_id)
-        if mapping:
-            logger.info(
-                f"Found movie mapping for IMDb {imdb_id}: {mapping.titles.romaji or mapping.titles.english}"
-            )
-            return await _search_movie_by_mapping(
-                mapping, year, limit, offset, imdb_id=imdb_id
-            )
-        else:
-            logger.warning(f"No mapping found for IMDb {imdb_id}")
-
-    # Fallback to title query
-    if query:
-        logger.info(f"Falling back to title query search: {query}")
-        return await _search_movie_by_query(query, year, limit, offset)
-
-    # No valid search parameters
-    logger.warning("Movie search called without valid parameters")
-
-    # For indexer testing, return a default search
-    if tmdb_id is None and imdb_id is None and query is None:
-        logger.info(
-            "Movie search called without parameters - returning default search for 'Suzume' for indexer test"
-        )
-        return await _search_movie_by_query("Suzume", None, limit, offset)
-
-    return create_empty_rss()
-
-
-async def _search_movie_by_mapping(
-    mapping,
-    year: Optional[int],
-    limit: int,
-    offset: int,
-    tmdb_id: Optional[int] = None,
-    imdb_id: Optional[str] = None,
-) -> Response:
-    """Search for a movie using its mapping."""
-    try:
-        results = await movie_query_service.search_movie(mapping, year)
-        logger.info(f"Found {len(results)} results for movie search")
-
-        # Apply pagination
-        paginated_results = results[offset : offset + limit]
-
-        # Convert to Torznab RSS with movie categories
-        rss_xml = create_movie_torznab_rss(
-            paginated_results,
-            tmdb_id=tmdb_id,
-            imdb_id=imdb_id,
-            year=year or mapping.year,
-        )
-
-        return Response(content=rss_xml, media_type="application/xml")
-
-    except Exception as e:
-        logger.error(f"Movie search failed: {e}", exc_info=True)
-        return create_empty_rss()
-
-
-async def _search_movie_by_query(
+async def handle_search(
     query: str,
-    year: Optional[int],
     limit: int,
     offset: int,
+    season: Optional[int] = None,
+    episode: Optional[int] = None,
+    categories: Optional[list[int]] = None,
 ) -> Response:
-    """Search for a movie by title query."""
+    """Handle guarded generic searches."""
     try:
-        results = await movie_query_service.search_movie_by_query(query)
-        logger.info(f"Found {len(results)} results for movie query: {query}")
-
-        # Apply pagination
-        paginated_results = results[offset : offset + limit]
-
-        # Convert to Torznab RSS with movie categories
-        rss_xml = create_movie_torznab_rss(paginated_results, year=year)
-
-        return Response(content=rss_xml, media_type="application/xml")
-
+        results = await core_search_service.generic_search(
+            query,
+            limit + offset,
+            season=season,
+            episode=episode,
+            categories=categories,
+        )
     except Exception as e:
-        logger.error(f"Movie query search failed: {e}", exc_info=True)
+        logger.error(
+            "Generic search failed for query %r S%sE%s: %s",
+            query,
+            season,
+            episode,
+            e,
+            exc_info=True,
+        )
         return create_empty_rss()
 
+    paged = results[offset : offset + limit]
+    return Response(
+        content=torznab_renderer.render(paged),
+        media_type="application/xml",
+    )
 
-def create_movie_torznab_rss(
+
+def create_torznab_rss(
     results: list[SearchResult],
-    tmdb_id: Optional[int] = None,
-    imdb_id: Optional[str] = None,
-    year: Optional[int] = None,
+    tvdbid: Optional[int] = None,
+    season: Optional[int] = None,
+    episode: Optional[int] = None,
 ) -> str:
-    """Create Torznab-compliant RSS XML for movie search results."""
-    rss = Element("rss", version="2.0")
-    rss.set("xmlns:atom", "http://www.w3.org/2005/Atom")
-    rss.set("xmlns:torznab", "http://torznab.com/schemas/2015/feed")
-
-    channel = SubElement(rss, "channel")
-    SubElement(channel, "title").text = "AnimeSonarrProxy - Movies"
-    SubElement(channel, "description").text = "Anime Movie Torznab Proxy for Radarr"
-    SubElement(channel, "link").text = f"{settings.HOST}:{settings.PORT}"
-
-    for result in results:
-        item = SubElement(channel, "item")
-
-        SubElement(item, "title").text = result.title
-        SubElement(item, "guid").text = result.guid
-        SubElement(item, "link").text = result.link
-        if result.info_url:
-            SubElement(item, "comments").text = result.info_url
-        SubElement(item, "pubDate").text = result.pub_date.strftime(
-            "%a, %d %b %Y %H:%M:%S +0000"
-        )
-
-        # Torznab attributes
-        SubElement(item, "torznab:attr", name="size", value=str(result.size))
-        SubElement(item, "torznab:attr", name="seeders", value=str(result.seeders))
-        SubElement(item, "torznab:attr", name="peers", value=str(result.peers))
-
-        # Download/upload factors
-        SubElement(item, "torznab:attr", name="downloadvolumefactor", value="1")
-        SubElement(item, "torznab:attr", name="uploadvolumefactor", value="1")
-
-        # Movie categories (2060 = Movies/Anime)
-        SubElement(item, "torznab:attr", name="category", value="2000")
-        SubElement(item, "torznab:attr", name="category", value="2060")
-
-        # Add movie metadata if available
-        if tmdb_id:
-            SubElement(item, "torznab:attr", name="tmdbid", value=str(tmdb_id))
-        if imdb_id:
-            SubElement(item, "torznab:attr", name="imdbid", value=imdb_id)
-        if year:
-            SubElement(item, "torznab:attr", name="year", value=str(year))
-
-        # Enclosure (download link)
-        SubElement(item, "enclosure", url=result.link, type="application/x-bittorrent")
-
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(
-        rss, encoding="unicode"
+    """Compatibility wrapper for tests and simple RSS rendering."""
+    return torznab_renderer.render(
+        results,
+        tvdb_id=tvdbid,
+        season=season,
+        episode=episode,
     )
 
 
 def create_empty_rss() -> Response:
-    """Create empty RSS response."""
-    empty_xml = create_torznab_rss([])
-    return Response(content=empty_xml, media_type="application/xml")
+    """Create an empty Torznab RSS response."""
+    return Response(content=torznab_renderer.render([]), media_type="application/xml")

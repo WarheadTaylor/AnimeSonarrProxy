@@ -7,6 +7,7 @@ This project uses GitHub Actions to automatically build and push Docker images t
 The workflow (`.github/workflows/docker-build.yml`) automatically builds and pushes images when:
 
 - **Push to `main` branch** → Tagged as `main` and `latest`
+- **Push to `2.0` branch** → Tagged as `2.0` for testing the next major version
 - **Push to `beta` branch** → Tagged as `beta`
 - **Push a tag like `v1.0.0`** → Tagged as `v1.0.0`, `1.0`, and `1`
 - **Pull Request** → Builds but doesn't push (testing only)
@@ -17,6 +18,7 @@ Images are available at: `ghcr.io/warheadtaylor/animesonarrproxy`
 
 Available tags:
 - `main` - Stable branch build
+- `2.0` - Next major version testing branch build
 - `beta` - Beta branch build
 - `latest` - Latest stable build from main branch
 - `v1.0.0` - Specific version tags (semver)
@@ -56,6 +58,20 @@ Images are built for multiple architectures:
 - `linux/arm64` (ARM64/aarch64)
 
 Docker will automatically pull the correct architecture for your system.
+
+## Testing the 2.0 Branch
+
+Users who want to test the 2.0 branch without moving to `latest` can pin the 2.0
+image tag:
+
+```yaml
+services:
+  animesonarrproxy:
+    image: ghcr.io/warheadtaylor/animesonarrproxy:2.0
+```
+
+The `latest` tag is only published from the default branch, so branch testing does
+not affect existing users who pull `latest`.
 
 ## Updating
 

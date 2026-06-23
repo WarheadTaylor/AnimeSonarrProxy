@@ -1,264 +1,80 @@
-# Unraid Setup Guide for AnimeSonarrProxy
+# Unraid Setup
 
-This guide will walk you through setting up AnimeSonarrProxy on Unraid using Docker.
+AnimeSonarrProxy now searches Nyaa directly. Prowlarr is not required for v1 of
+the rewritten core flow.
 
-## Method 1: Using Docker Compose Manager (Recommended)
+## Docker Compose
 
-### Prerequisites
-- Unraid 6.9.0 or later
-- Docker Compose Manager plugin installed
+Create `/mnt/user/appdata/animesonarrproxy/docker-compose.yml`:
 
-### Steps
+```yaml
+version: "3.8"
 
-1. **Install Docker Compose Manager Plugin**
-   - Go to Unraid Web UI → Plugins → Install Plugin
-   - Enter: `https://raw.githubusercontent.com/dcflachs/composeman/master/composeman.plg`
-   - Click Install
-
-2. **Create Docker Compose Directory**
-   ```bash
-   mkdir -p /mnt/user/appdata/animesonarrproxy
-   cd /mnt/user/appdata/animesonarrproxy
-   ```
-
-3. **Create docker-compose.yml**
-   Create a file `/mnt/user/appdata/animesonarrproxy/docker-compose.yml` with this content:
-
-   ```yaml
-   version: '3.8'
-
-   services:
-     animesonarrproxy:
-       image: ghcr.io/warheadtaylor/animesonarrproxy:latest
-       container_name: animesonarrproxy
-       restart: unless-stopped
-       ports:
-         - "8000:8000"
-       volumes:
-         - /mnt/user/appdata/animesonarrproxy/data:/app/data
-        environment:
-          - API_KEY=your-secret-api-key-here
-          - HOST=0.0.0.0
-          - PORT=8000
-          - PROWLARR_URL=http://prowlarr:9696  # or http://192.168.x.x:9696
-          - PROWLARR_API_KEY=your_prowlarr_api_key
-          # Optional: Sonarr integration for accurate episode metadata
-          - SONARR_URL=http://sonarr:8989  # or http://192.168.x.x:8989
-          - SONARR_API_KEY=your_sonarr_api_key
-          - LOG_LEVEL=INFO
-       networks:
-         - arr-network
-
-   networks:
-     arr-network:
-       external: true  # Use existing network with Sonarr/Prowlarr
-   ```
-
-4. **Create Data Directory**
-   ```bash
-   mkdir -p /mnt/user/appdata/animesonarrproxy/data
-   ```
-
-5. **Start the Container**
-   - Go to Docker Compose Manager in Unraid
-   - Click "Add New Stack"
-   - Name: `animesonarrproxy`
-   - Path: `/mnt/user/appdata/animesonarrproxy/docker-compose.yml`
-   - Click "Compose Up"
-
-## Method 2: Using Unraid Docker Interface
-
-### Steps
-
-1. **Add Container**
-   - Go to Docker tab → Add Container
-
-2. **Configure Container**
-   - **Name:** `animesonarrproxy`
-   - **Repository:** `ghcr.io/warheadtaylor/animesonarrproxy:latest`
-   - **Network Type:** `Bridge`
-
-3. **Add Ports**
-   - **Container Port:** `8000`
-   - **Host Port:** `8000`
-   - **Connection Type:** `TCP`
-
-4. **Add Paths**
-   - **Container Path:** `/app/data`
-   - **Host Path:** `/mnt/user/appdata/animesonarrproxy/data`
-   - **Access Mode:** `Read/Write`
-
-5. **Add Environment Variables**
-   Click "Add another Path, Port, Variable, Label or Device" for each:
-
-   | Name | Key | Value |
-   |------|-----|-------|
-   | API Key | `API_KEY` | `your-secret-api-key-here` |
-   | Host | `HOST` | `0.0.0.0` |
-   | Port | `PORT` | `8000` |
-   | Prowlarr URL | `PROWLARR_URL` | `http://192.168.x.x:9696` |
-   | Prowlarr API Key | `PROWLARR_API_KEY` | `your_prowlarr_api_key` |
-   | Sonarr URL (Optional) | `SONARR_URL` | `http://192.168.x.x:8989` |
-   | Sonarr API Key (Optional) | `SONARR_API_KEY` | `your_sonarr_api_key` |
-   | Log Level | `LOG_LEVEL` | `INFO` |
-
-   > **Note:** Sonarr integration is optional but recommended. It allows the proxy to query Sonarr for accurate episode metadata, which helps distinguish between regular episodes and specials.
-
-6. **Apply and Start**
-
-## Method 3: Manual Build on Unraid
-
-If you want to build from source:
-
-1. **Install User Scripts Plugin**
-   - Go to Plugins → Install Plugin
-   - Search for "User Scripts"
-
-2. **Clone Repository**
-   ```bash
-   cd /mnt/user/appdata
-   git clone https://github.com/yourusername/AnimeSonarrProxy.git animesonarrproxy
-   cd animesonarrproxy
-   ```
-
-3. **Build Docker Image**
-   ```bash
-   docker build -t animesonarrproxy:local .
-   ```
-
-4. **Run Container**
-   ```bash
-   docker run -d \
-     --name animesonarrproxy \
-     --restart unless-stopped \
-     -p 8000:8000 \
-     -v /mnt/user/appdata/animesonarrproxy/data:/app/data \
-     -e API_KEY=your-secret-api-key-here \
-     -e PROWLARR_URL=http://192.168.x.x:9696 \
-     -e PROWLARR_API_KEY=your_prowlarr_api_key \
-     animesonarrproxy:local
-   ```
-
-## Post-Installation Setup
-
-### 1. Access WebUI
-Navigate to `http://your-unraid-ip:8000` to access the mapping management interface.
-
-### 2. Configure Sonarr
-
-1. In Sonarr, go to **Settings → Indexers**
-2. Click the **+** button → **Custom → Torznab**
-3. Configure:
-   - **Name:** `AnimeSonarrProxy`
-   - **URL:** `http://your-unraid-ip:8000`
-   - **API Path:** `/api`
-   - **API Key:** The API key you set in environment variables
-   - **Categories:** `5070` (TV/Anime)
-4. Test and Save
-
-### 3. Configure Prowlarr
-
-Make sure you have Nyaa or other anime indexers configured in Prowlarr.
-
-## Networking
-
-### Option A: Host Network (Simplest)
-If your containers use host networking, use `http://localhost:9696` for Prowlarr URL.
-
-### Option B: Custom Docker Network (Recommended)
-Create a custom network for all *arr apps:
-
-```bash
-docker network create arr-network
-
-# Connect existing containers
-docker network connect arr-network sonarr
-docker network connect arr-network prowlarr
-docker network connect arr-network animesonarrproxy
+services:
+  animesonarrproxy:
+    image: ghcr.io/warheadtaylor/animesonarrproxy:latest
+    container_name: animesonarrproxy
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /mnt/user/appdata/animesonarrproxy/data:/app/data
+    environment:
+      - API_KEY=change-me
+      - HOST=0.0.0.0
+      - PORT=8000
+      - NYAA_URL=https://nyaa.si
+      - NYAA_NO_REMAKES=true
+      - NYAA_TRUSTED_ONLY=false
+      - SONARR_URL=http://sonarr:8989
+      - SONARR_API_KEY=your_sonarr_api_key
+      - RADARR_URL=http://radarr:7878
+      - RADARR_API_KEY=your_radarr_api_key
+      - DATA_DIR=/app/data
+      - LOG_LEVEL=INFO
 ```
 
-Then use container names in URLs:
-- Prowlarr URL: `http://prowlarr:9696`
-- AnimeSonarrProxy URL in Sonarr: `http://animesonarrproxy:8000`
+Start it:
 
-### Option C: Bridge Network (Default)
-Use container IP addresses or host IP with port mappings.
-
-## Troubleshooting
-
-### Check Logs
-```bash
-docker logs animesonarrproxy
-```
-
-### Verify Container is Running
-```bash
-docker ps | grep animesonarrproxy
-```
-
-### Test API Endpoint
-```bash
-curl "http://localhost:8000/api?t=caps&apikey=your-api-key"
-```
-
-### Verify Data Directory Permissions
-```bash
-ls -la /mnt/user/appdata/animesonarrproxy/data
-```
-
-### Common Issues
-
-1. **Container won't start**
-   - Check logs: `docker logs animesonarrproxy`
-   - Verify port 8000 is not in use: `netstat -tulpn | grep 8000`
-
-2. **Can't connect to Prowlarr**
-   - Verify Prowlarr URL and API key
-   - Check network connectivity: `docker exec animesonarrproxy curl http://prowlarr:9696`
-
-3. **Sonarr can't connect to proxy**
-   - Verify firewall rules
-   - Check API key matches
-   - Test from Sonarr container: `docker exec sonarr curl http://animesonarrproxy:8000/api?t=caps`
-
-## Updating
-
-### Docker Compose Method
 ```bash
 cd /mnt/user/appdata/animesonarrproxy
-docker-compose pull
 docker-compose up -d
 ```
 
-### Unraid Docker Tab
-1. Go to Docker tab
-2. Click "Check for Updates"
-3. Update if available
+## Sonarr
 
-### Manual Build
-```bash
-cd /mnt/user/appdata/animesonarrproxy
-git pull
-docker build -t animesonarrproxy:local .
-docker stop animesonarrproxy
-docker rm animesonarrproxy
-# Re-run docker run command from installation
-```
+Add a custom Torznab indexer:
 
-## Backup
+- URL: `http://your-unraid-ip:8000`
+- API path: `/api`
+- API key: the `API_KEY` value above
+- Categories: `5070`
 
-Important files to backup:
-- `/mnt/user/appdata/animesonarrproxy/data/mappings.json` - Cached mappings
-- `/mnt/user/appdata/animesonarrproxy/data/overrides.json` - User overrides
+Set `SONARR_URL` and `SONARR_API_KEY` when the proxy can reach Sonarr. This lets
+the proxy confirm season/episode and absolute episode metadata.
 
-Use Unraid's built-in backup tools or:
-```bash
-cp -r /mnt/user/appdata/animesonarrproxy/data /mnt/user/backups/animesonarrproxy-$(date +%Y%m%d)
-```
+The proxy searches Nyaa only for selected Torznab categories. Select Anime
+(`5070`) to search Nyaa Anime English-translated (`1_2`), or
+Live Action/English-translated (`100041`) to search Nyaa Live Action
+English-translated (`4_1`).
 
-## Support
+## Radarr
 
-For issues, check:
-1. Container logs
-2. GitHub Issues
-3. Unraid forums
+Add a custom Torznab indexer:
+
+- URL: `http://your-unraid-ip:8000`
+- API path: `/api`
+- API key: the `API_KEY` value above
+- Categories: `2000,2060`
+
+Set `RADARR_URL` and `RADARR_API_KEY` when the proxy can reach Radarr. This lets
+the proxy confirm movie titles, alternate titles, IDs, and year.
+
+## Data
+
+Persist `/app/data`. It stores cached anime metadata and TheXEM data.
+
+Back up:
+
+- `/mnt/user/appdata/animesonarrproxy/data/anime-offline-database.json`
+- `/mnt/user/appdata/animesonarrproxy/data/thexem_cache.json`

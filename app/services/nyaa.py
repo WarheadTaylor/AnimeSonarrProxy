@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 from urllib.parse import quote_plus
 import httpx
@@ -26,6 +26,7 @@ NYAA_CATEGORY_ANIME_ENGLISH = "1_2"
 NYAA_CATEGORY_ANIME_NON_ENGLISH = "1_3"
 NYAA_CATEGORY_ANIME_RAW = "1_4"
 NYAA_CATEGORY_ALL_ANIME = "1_0"
+NYAA_CATEGORY_LIVE_ACTION_ENGLISH = "4_1"
 NYAA_CATEGORY_ALL = "0_0"
 
 # Nyaa filter codes
@@ -36,13 +37,23 @@ NYAA_FILTER_TRUSTED = "2"
 # Nyaa RSS namespace
 NYAA_NS = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
 
+# Torznab category IDs used to select Nyaa source categories.
+TORZNAB_CATEGORY_ANIME = 5070
+TORZNAB_CATEGORY_MOVIES_ANIME = 2060
+TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH = 100041
+
+TORZNAB_CATEGORY_TO_NYAA = {
+    TORZNAB_CATEGORY_ANIME: NYAA_CATEGORY_ANIME_ENGLISH,
+    TORZNAB_CATEGORY_MOVIES_ANIME: NYAA_CATEGORY_ANIME_ENGLISH,
+    TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH: NYAA_CATEGORY_LIVE_ACTION_ENGLISH,
+}
+
 
 class NyaaClient:
     """Direct client for Nyaa.si RSS feed.
 
-    Provides the same interface as ProwlarrClient but searches Nyaa.si directly,
-    allowing for better filtering (English-only, trusted uploads) and removing
-    the Prowlarr middleware dependency.
+    Searches Nyaa.si directly, allowing for Nyaa-specific filtering, caching,
+    and rate limiting.
 
     Features:
     - Combined query support using Nyaa's | (OR) operator
@@ -64,6 +75,40 @@ class NyaaClient:
     ) -> str:
         """Generate cache key for a search query."""
         return f"nyaa|{query}|{category}|{filter_code}|{limit}"
+
+    def _selected_categories(
+        self, torznab_categories: Optional[List[int]] = None
+    ) -> List[str]:
+        """Return Nyaa categories selected by Torznab category IDs."""
+        if not torznab_categories:
+            return []
+
+        mapped = [
+            nyaa_category
+            for category in torznab_categories
+            if (nyaa_category := TORZNAB_CATEGORY_TO_NYAA.get(category))
+        ]
+        return self._dedupe_categories(mapped)
+
+    def _dedupe_categories(self, raw_categories: List[str]) -> List[str]:
+        """Remove blank and duplicate Nyaa categories while preserving order."""
+        categories: List[str] = []
+        seen = set()
+
+        for raw_category in raw_categories:
+            category = raw_category.strip()
+            if not category or category in seen:
+                continue
+            seen.add(category)
+            categories.append(category)
+
+        return categories
+
+    def _torznab_categories_for_nyaa_category(self, category_id: str) -> List[int]:
+        """Map a Nyaa RSS category ID to Torznab categories."""
+        if category_id == NYAA_CATEGORY_LIVE_ACTION_ENGLISH:
+            return [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+        return [TORZNAB_CATEGORY_ANIME]
 
     def _get_cached_results(self, cache_key: str) -> Optional[List[SearchResult]]:
         """Get cached results if still valid."""
@@ -140,16 +185,7 @@ class NyaaClient:
         if not titles:
             return ""
 
-        # Sanitize and quote titles (multi-word titles need quotes)
-        def quote_title(t: str) -> str:
-            # Escape any quotes in the title
-            t = t.replace('"', "")
-            # Quote if contains spaces or special chars
-            if " " in t or any(c in t for c in "|()"):
-                return f'"{t}"'
-            return t
-
-        quoted_titles = [quote_title(t) for t in titles if t.strip()]
+        quoted_titles = [self._quote_search_term(t) for t in titles if t.strip()]
 
         # Build title part
         if len(quoted_titles) == 1:
@@ -169,10 +205,14 @@ class NyaaClient:
         # Build keyword part if provided
         keyword_part = ""
         if keywords:
-            unique_kw = list(dict.fromkeys(keywords))  # Preserve order, remove dupes
+            unique_kw = [
+                self._quote_search_term(keyword)
+                for keyword in dict.fromkeys(keywords)
+                if keyword.strip()
+            ]
             if len(unique_kw) == 1:
                 keyword_part = unique_kw[0]
-            else:
+            elif unique_kw:
                 keyword_part = f"({'|'.join(unique_kw)})"
 
         # Combine parts
@@ -236,17 +276,15 @@ class NyaaClient:
         limit: Optional[int] = None,
         categories: Optional[
             List[int]
-        ] = None,  # Ignored - uses NYAA_ENGLISH_ONLY setting
+        ] = None,
     ) -> List[SearchResult]:
         """
         Search Nyaa.si RSS feed.
 
-        Matches the ProwlarrClient.search() interface for drop-in replacement.
-
         Args:
             query: Search query
             limit: Maximum results to return (applied after fetch)
-            categories: Ignored - Nyaa filtering is controlled by settings
+            categories: Optional Torznab categories selected by the manager
 
         Returns:
             List of SearchResult objects
@@ -254,23 +292,62 @@ class NyaaClient:
         if limit is None:
             limit = settings.MAX_RESULTS_PER_QUERY
 
-        # Determine category based on settings
-        if settings.NYAA_ENGLISH_ONLY:
-            category = NYAA_CATEGORY_ANIME_ENGLISH
-        else:
-            category = NYAA_CATEGORY_ALL_ANIME
+        categories_to_search = self._selected_categories(categories)
+        if not categories_to_search:
+            logger.info("Nyaa search skipped for %r: no supported category selected", query)
+            return []
 
-        # Determine filter based on settings
         if settings.NYAA_TRUSTED_ONLY:
             filter_code = NYAA_FILTER_TRUSTED
+        elif settings.NYAA_NO_REMAKES:
+            filter_code = NYAA_FILTER_NO_REMAKES
         else:
             filter_code = NYAA_FILTER_NONE
 
+        logger.info(
+            "Nyaa search categories for %r: %s",
+            query,
+            ", ".join(categories_to_search),
+        )
+
+        merged: Dict[str, SearchResult] = {}
+        for category in categories_to_search:
+            category_results = await self._search_category(
+                query, category, filter_code, limit
+            )
+            logger.info(
+                "Nyaa category %s search for %r returned %s results",
+                category,
+                query,
+                len(category_results),
+            )
+            for result in category_results:
+                key = result.info_hash or result.guid
+                current = merged.get(key)
+                if current is None or (result.seeders, result.pub_date) > (
+                    current.seeders,
+                    current.pub_date,
+                ):
+                    merged[key] = result
+
+        results = list(merged.values())
+        results.sort(key=lambda result: (result.seeders, result.pub_date), reverse=True)
+        return results[:limit]
+
+    async def _search_category(
+        self, query: str, category: str, filter_code: str, limit: int
+    ) -> List[SearchResult]:
+        """Search one configured Nyaa category."""
         # Check cache first
         cache_key = self._get_cache_key(query, category, filter_code, limit)
         cached = self._get_cached_results(cache_key)
         if cached is not None:
-            logger.info(f"Nyaa cache hit for '{query}' ({len(cached)} results)")
+            logger.info(
+                "Nyaa cache hit for %r category %s (%s results)",
+                query,
+                category,
+                len(cached),
+            )
             return cached
 
         # Build RSS URL
@@ -278,7 +355,7 @@ class NyaaClient:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                logger.info("Nyaa RSS request initiated")
+                logger.info("Nyaa RSS request initiated for category %s", category)
 
                 response = await self._rate_limited_request(client, url)
 
@@ -304,18 +381,36 @@ class NyaaClient:
                 if results:
                     sample_titles = [r.title for r in results[:3]]
                     logger.info(
-                        f"Nyaa search '{query}' returned {len(results)} results. Sample: {sample_titles}"
+                        "Nyaa search %r category %s returned %s results. Sample: %s",
+                        query,
+                        category,
+                        len(results),
+                        sample_titles,
                     )
                 else:
-                    logger.info(f"Nyaa search '{query}' returned 0 results")
+                    logger.info(
+                        "Nyaa search %r category %s returned 0 results",
+                        query,
+                        category,
+                    )
 
                 return results
 
         except httpx.HTTPError as e:
-            logger.error(f"Nyaa search failed for query '{query}': {e}")
+            logger.error(
+                "Nyaa search failed for query %r category %s: %s",
+                query,
+                category,
+                e,
+            )
             return []
         except ET.ParseError as e:
-            logger.error(f"Nyaa RSS parse error for query '{query}': {e}")
+            logger.error(
+                "Nyaa RSS parse error for query %r category %s: %s",
+                query,
+                category,
+                e,
+            )
             return []
 
     async def search_multi(
@@ -324,6 +419,7 @@ class NyaaClient:
         episodes: Optional[List[int]] = None,
         keywords: Optional[List[str]] = None,
         limit: Optional[int] = None,
+        categories: Optional[List[int]] = None,
     ) -> List[SearchResult]:
         """
         Search Nyaa.si using a combined query with multiple titles/episodes.
@@ -336,6 +432,7 @@ class NyaaClient:
             episodes: Optional list of episode numbers to include
             keywords: Optional list of keywords (e.g., ["OVA", "Special"])
             limit: Maximum results to return
+            categories: Optional Torznab categories selected by the manager
 
         Returns:
             List of SearchResult objects
@@ -361,7 +458,72 @@ class NyaaClient:
         logger.info(f"Nyaa combined search: {combined_query}")
 
         # Use the standard search method with the combined query
-        return await self.search(combined_query, limit=limit)
+        results = await self.search(combined_query, limit=limit, categories=categories)
+        if results or len(titles) <= 1:
+            return results
+
+        logger.info(
+            "Nyaa combined search returned 0 results; retrying %s title queries",
+            len(titles),
+        )
+        merged: Dict[str, SearchResult] = {}
+        for title in titles:
+            fallback_query = self._build_plain_title_query(title, episodes, keywords)
+            if not fallback_query:
+                continue
+            title_results = await self.search(
+                fallback_query, limit=limit, categories=categories
+            )
+            for result in title_results:
+                key = result.info_hash or result.guid
+                current = merged.get(key)
+                if current is None or (result.seeders, result.pub_date) > (
+                    current.seeders,
+                    current.pub_date,
+                ):
+                    merged[key] = result
+
+        fallback_results = list(merged.values())
+        fallback_results.sort(
+            key=lambda result: (result.seeders, result.pub_date), reverse=True
+        )
+        return fallback_results[:limit]
+
+    def _build_plain_title_query(
+        self,
+        title: str,
+        episodes: Optional[List[int]] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> str:
+        """Build an unquoted fallback query for Nyaa's stricter RSS search."""
+        parts = [title.strip()]
+        if keywords:
+            unique_kw = [
+                self._quote_search_term(keyword)
+                for keyword in dict.fromkeys(keywords)
+                if keyword.strip()
+            ]
+            if unique_kw:
+                parts.append(
+                    unique_kw[0]
+                    if len(unique_kw) == 1
+                    else f"({'|'.join(unique_kw)})"
+                )
+        if episodes:
+            unique_eps = sorted(set(episodes))
+            parts.append(
+                str(unique_eps[0])
+                if len(unique_eps) == 1
+                else f"({'|'.join(str(episode) for episode in unique_eps)})"
+            )
+        return " ".join(part for part in parts if part)
+
+    def _quote_search_term(self, term: str) -> str:
+        """Quote a Nyaa search term when it must be matched as a phrase."""
+        cleaned = term.replace('"', "").strip()
+        if " " in cleaned or any(char in cleaned for char in "|()"):
+            return f'"{cleaned}"'
+        return cleaned
 
     def _parse_rss_response(self, xml_text: str) -> List[SearchResult]:
         """Parse Nyaa RSS XML response into SearchResult objects."""
@@ -411,6 +573,7 @@ class NyaaClient:
         category_id = self._get_nyaa_text(item, "categoryId", "")
         info_hash = self._get_nyaa_text(item, "infoHash", "")
         trusted = self._get_nyaa_text(item, "trusted", "No")
+        remake = self._get_nyaa_text(item, "remake", "No")
 
         # Parse numeric fields
         try:
@@ -426,21 +589,28 @@ class NyaaClient:
         size = self._parse_size(size_str)
         pub_date = self._parse_date(pub_date_str)
 
-        # Log trusted status for debugging
-        if trusted == "Yes":
+        is_trusted = trusted.lower() == "yes"
+        is_remake = remake.lower() == "yes"
+
+        if is_trusted:
             logger.debug(f"Trusted release: {title}")
 
         return SearchResult(
             title=title,
+            original_title=title,
             guid=guid,
             link=link,  # .torrent download URL (user preference)
             info_url=guid,  # View page URL
             pub_date=pub_date,
             size=size,
             seeders=seeders,
-            peers=leechers,
+            peers=seeders + leechers,
             indexer="nyaa",
-            categories=[5070],  # Map to Torznab TV/Anime category for Sonarr
+            categories=self._torznab_categories_for_nyaa_category(category_id),
+            info_hash=info_hash.lower() if info_hash else None,
+            nyaa_category_id=category_id,
+            trusted=is_trusted,
+            remake=is_remake,
         )
 
     def _get_nyaa_text(self, item: ET.Element, tag: str, default: str = "") -> str:
@@ -492,7 +662,7 @@ class NyaaClient:
         Nyaa uses RFC 2822 format: "Tue, 09 Sep 2025 20:24:10 -0000"
         """
         if not date_str:
-            return datetime.utcnow()
+            return datetime.now(timezone.utc)
 
         # Try common RSS date formats
         formats = [
@@ -505,12 +675,15 @@ class NyaaClient:
 
         for fmt in formats:
             try:
-                return datetime.strptime(date_str, fmt)
+                parsed = datetime.strptime(date_str, fmt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
             except ValueError:
                 continue
 
         logger.warning(f"Could not parse date: {date_str}")
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)
 
 
 # Singleton instance

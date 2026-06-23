@@ -5,17 +5,13 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import torznab, webui
+from app.api import torznab
 from app.services.anime_db import anime_db
-from app.services.mapping import mapping_service
-from app.services.movie_mapping import movie_mapping_service
 from app.services.sonarr import sonarr_client
 from app.services.radarr import radarr_client
-from app.services import episode
 
 # Configure logging
 logging.basicConfig(
@@ -33,31 +29,18 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting AnimeSonarrProxy...")
     logger.info(
-        "Beta Sonarr title normalizer: %s",
-        "enabled" if settings.SONARR_TITLE_NORMALIZER_ENABLED else "disabled",
+        f"Torznab default language metadata: {settings.TORZNAB_DEFAULT_LANGUAGE or 'disabled'}"
     )
     logger.info(
-        f"Torznab default language metadata: {settings.TORZNAB_DEFAULT_LANGUAGE or 'disabled'}"
+        "Nyaa search defaults: url=%s no_remakes=%s trusted_only=%s",
+        settings.NYAA_URL,
+        settings.NYAA_NO_REMAKES,
+        settings.NYAA_TRUSTED_ONLY,
     )
 
     # Initialize anime-offline-database
     logger.info("Initializing anime-offline-database...")
     await anime_db.initialize()
-
-    # Initialize mapping service
-    logger.info("Initializing mapping service...")
-    await mapping_service.initialize()
-
-    # Initialize episode translator
-    logger.info("Initializing episode translator...")
-    episode.episode_translator = episode.EpisodeTranslator(mapping_service)
-
-    # Initialize movie mapping service (for Radarr support)
-    if settings.ENABLE_MOVIE_SEARCH:
-        logger.info("Initializing movie mapping service...")
-        await movie_mapping_service.initialize()
-    else:
-        logger.info("Movie search is disabled (ENABLE_MOVIE_SEARCH=False)")
 
     # Initialize Sonarr client (optional - for episode metadata lookup)
     if settings.SONARR_URL and settings.SONARR_API_KEY:
@@ -81,7 +64,6 @@ async def lifespan(app: FastAPI):
         f"AnimeSonarrProxy started successfully on {settings.HOST}:{settings.PORT}"
     )
     logger.info(f"Torznab API: http://{settings.HOST}:{settings.PORT}/api")
-    logger.info(f"WebUI: http://{settings.HOST}:{settings.PORT}/")
 
     yield
 
@@ -92,8 +74,8 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="AnimeSonarrProxy",
-    description="Torznab-compatible proxy for anime title mapping between Sonarr and Prowlarr",
-    version="1.0.0",
+    description="Torznab-compatible proxy for anime title normalization from Nyaa",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -108,10 +90,6 @@ app.add_middleware(
 
 # Include routers
 app.include_router(torznab.router, tags=["Torznab"])
-app.include_router(webui.router, tags=["WebUI"])
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
 if __name__ == "__main__":

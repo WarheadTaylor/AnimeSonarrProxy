@@ -14,64 +14,20 @@ class AnimeTitle(BaseModel):
     synonyms: List[str] = Field(default_factory=list)
 
 
-class AnimeMapping(BaseModel):
-    """Mapping between TVDB and anime databases."""
+class SeriesMetadata(BaseModel):
+    """Normalized series metadata from Sonarr and external providers."""
 
-    tvdb_id: int
-    anidb_id: Optional[int] = None
-    anilist_id: Optional[int] = None
-    mal_id: Optional[int] = None
-    titles: AnimeTitle
-    total_episodes: int = 0
-    season_info: List[Dict[str, int]] = Field(
-        default_factory=list
-    )  # [{"season": 1, "episodes": 12}, ...]
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
-    user_override: bool = False  # True if manually set via WebUI
-
-    def get_search_titles(self) -> List[str]:
-        """Get all unique title variations for search queries."""
-        titles = []
-        if self.titles.romaji:
-            titles.append(self.titles.romaji)
-        if self.titles.english and self.titles.english not in titles:
-            titles.append(self.titles.english)
-        if self.titles.native and self.titles.native not in titles:
-            titles.append(self.titles.native)
-        for synonym in self.titles.synonyms:
-            if synonym and synonym not in titles:
-                titles.append(synonym)
-        return titles
-
-
-class TorznabQuery(BaseModel):
-    """Torznab search query parameters."""
-
-    t: str  # Query type: tvsearch, search, caps
-    q: Optional[str] = None  # Search query
-    tvdbid: Optional[int] = None
-    season: Optional[int] = None
-    ep: Optional[int] = None
-    apikey: Optional[str] = None
-    limit: Optional[int] = 100
-    offset: Optional[int] = 0
-
-
-class TorznabItem(BaseModel):
-    """Torznab RSS item (search result)."""
-
+    tvdb_id: Optional[int] = None
+    tmdb_id: Optional[int] = None
+    tvmaze_id: Optional[int] = None
+    imdb_id: Optional[str] = None
     title: str
-    guid: str
-    link: str
-    pubDate: str
-    size: int
-    category: List[int] = Field(default_factory=lambda: [5070])  # TV > Anime
-    seeders: Optional[int] = None
-    peers: Optional[int] = None
-    grabs: Optional[int] = None
-    tvdbid: Optional[int] = None
-    season: Optional[int] = None
-    episode: Optional[int] = None
+    original_title: Optional[str] = None
+    alternate_titles: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    country: Optional[str] = None
+    language: Optional[str] = None
+    source: str
 
 
 class SearchResult(BaseModel):
@@ -87,84 +43,11 @@ class SearchResult(BaseModel):
     peers: int = 0
     indexer: str = ""
     categories: List[int] = Field(default_factory=lambda: [5070])  # TV > Anime
-
-    def to_torznab_item(
-        self,
-        tvdbid: Optional[int] = None,
-        season: Optional[int] = None,
-        episode: Optional[int] = None,
-    ) -> TorznabItem:
-        """Convert to Torznab format."""
-        return TorznabItem(
-            title=self.title,
-            guid=self.guid,
-            link=self.link,
-            pubDate=self.pub_date.strftime("%a, %d %b %Y %H:%M:%S +0000"),
-            size=self.size,
-            seeders=self.seeders,
-            peers=self.peers,
-            tvdbid=tvdbid,
-            season=season,
-            episode=episode,
-        )
-
-
-class MappingOverride(BaseModel):
-    """User-provided mapping override via WebUI."""
-
-    tvdb_id: int
-    anidb_id: Optional[int] = None
-    anilist_id: Optional[int] = None
-    mal_id: Optional[int] = None
-    custom_titles: List[str] = Field(default_factory=list)
-    season_episode_overrides: Dict[str, int] = Field(
-        default_factory=dict
-    )  # {"S01E01": 1, "S01E02": 2}
-    season_ranges: List[Dict[str, int]] = Field(
-        default_factory=list
-    )  # [{"season": 1, "episodes": 12, "start_absolute": 1}]
-    notes: str = ""
-
-
-class MovieMapping(BaseModel):
-    """Mapping between TMDB and anime databases for movies."""
-
-    tmdb_id: int
-    imdb_id: Optional[str] = None  # IMDb IDs are strings (e.g., "tt1234567")
-    anidb_id: Optional[int] = None
-    anilist_id: Optional[int] = None
-    mal_id: Optional[int] = None
-    titles: AnimeTitle
-    year: Optional[int] = None
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
-    user_override: bool = False  # True if manually set via WebUI
-
-    def get_search_titles(self) -> List[str]:
-        """Get all unique title variations for search queries."""
-        titles = []
-        if self.titles.romaji:
-            titles.append(self.titles.romaji)
-        if self.titles.english and self.titles.english not in titles:
-            titles.append(self.titles.english)
-        if self.titles.native and self.titles.native not in titles:
-            titles.append(self.titles.native)
-        for synonym in self.titles.synonyms:
-            if synonym and synonym not in titles:
-                titles.append(synonym)
-        return titles
-
-
-class MovieMappingOverride(BaseModel):
-    """User-provided movie mapping override via WebUI."""
-
-    tmdb_id: int
-    imdb_id: Optional[str] = None
-    anidb_id: Optional[int] = None
-    anilist_id: Optional[int] = None
-    mal_id: Optional[int] = None
-    custom_titles: List[str] = Field(default_factory=list)
-    year: Optional[int] = None
-    notes: str = ""
+    original_title: Optional[str] = None
+    info_hash: Optional[str] = None
+    nyaa_category_id: Optional[str] = None
+    trusted: bool = False
+    remake: bool = False
 
 
 class EpisodeInfo(BaseModel):
