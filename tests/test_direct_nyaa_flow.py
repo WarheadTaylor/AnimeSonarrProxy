@@ -399,6 +399,22 @@ def test_live_action_ep11_alias_does_not_match_requested_ep01():
     assert release_matcher.match_tv(result, context) is None
 
 
+def test_live_action_episode_only_release_without_title_does_not_match():
+    """EPxx-only releases should not match just because the episode number matches."""
+    result = make_result("[MagicStar] EP01 [WEBDL] [1080p] [DSNP]")
+    context = TvSearchContext(
+        tvdb_id=470866,
+        season=1,
+        episode=1,
+        absolute_episode=None,
+        search_titles=["The Flowers of Evil", "Aku no Hana"],
+        returned_title="The Flowers of Evil",
+        is_live_action=True,
+    )
+
+    assert release_matcher.match_tv(result, context) is None
+
+
 def test_live_action_s01e01_matches_and_s01e10_does_not():
     """Seasonal live-action releases should match both requested season and episode."""
     context = TvSearchContext(
@@ -856,6 +872,45 @@ async def test_nyaa_multi_category_search_sorts_and_limits_after_merge(monkeypat
     )
 
     assert results == [high, mid]
+
+
+@pytest.mark.asyncio
+async def test_search_multi_retries_individual_titles_when_combined_query_is_empty(
+    monkeypatch,
+):
+    """Nyaa can return no rows for quoted OR queries even when single aliases match."""
+    client = NyaaClient()
+    magicstar = make_result(
+        "[MagicStar] Aku no Hana EP01 [WEBDL] [1080p] [DSNP]",
+        guid="https://nyaa.si/view/magicstar",
+        seeders=24,
+    )
+    calls = []
+
+    async def fake_search(query, limit=None, categories=None):
+        calls.append((query, limit, categories))
+        if query == "Aku no Hana":
+            return [magicstar]
+        return []
+
+    monkeypatch.setattr(client, "search", fake_search)
+
+    results = await client.search_multi(
+        ["The Flowers of Evil", "Aku no Hana"],
+        limit=100,
+        categories=[TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+    )
+
+    assert results == [magicstar]
+    assert calls == [
+        (
+            '("The Flowers of Evil"|"Aku no Hana")',
+            100,
+            [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+        ),
+        ("The Flowers of Evil", 100, [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]),
+        ("Aku no Hana", 100, [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]),
+    ]
 
 
 def test_torznab_renderer_includes_expected_metadata_attrs():

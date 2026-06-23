@@ -63,8 +63,12 @@ class ReleaseMatcher:
         self, parsed: ParsedRelease, search_titles: list[str]
     ) -> Optional[str]:
         haystacks = [
-            self._normalize_title(parsed.series_title or ""),
-            self._normalize_title(parsed.original_title),
+            haystack
+            for haystack in (
+                self._normalize_title(parsed.series_title or ""),
+                self._normalize_title(parsed.original_title),
+            )
+            if haystack
         ]
         for title in search_titles:
             needle = self._normalize_title(title)

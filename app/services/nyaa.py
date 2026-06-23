@@ -463,7 +463,60 @@ class NyaaClient:
         logger.info(f"Nyaa combined search: {combined_query}")
 
         # Use the standard search method with the combined query
-        return await self.search(combined_query, limit=limit, categories=categories)
+        results = await self.search(combined_query, limit=limit, categories=categories)
+        if results or len(titles) <= 1:
+            return results
+
+        logger.info(
+            "Nyaa combined search returned 0 results; retrying %s title queries",
+            len(titles),
+        )
+        merged: Dict[str, SearchResult] = {}
+        for title in titles:
+            fallback_query = self._build_plain_title_query(title, episodes, keywords)
+            if not fallback_query:
+                continue
+            title_results = await self.search(
+                fallback_query, limit=limit, categories=categories
+            )
+            for result in title_results:
+                key = result.info_hash or result.guid
+                current = merged.get(key)
+                if current is None or (result.seeders, result.pub_date) > (
+                    current.seeders,
+                    current.pub_date,
+                ):
+                    merged[key] = result
+
+        fallback_results = list(merged.values())
+        fallback_results.sort(
+            key=lambda result: (result.seeders, result.pub_date), reverse=True
+        )
+        return fallback_results[:limit]
+
+    def _build_plain_title_query(
+        self,
+        title: str,
+        episodes: Optional[List[int]] = None,
+        keywords: Optional[List[str]] = None,
+    ) -> str:
+        """Build an unquoted fallback query for Nyaa's stricter RSS search."""
+        parts = [title.strip()]
+        if keywords:
+            unique_kw = list(dict.fromkeys(keywords))
+            parts.append(
+                unique_kw[0]
+                if len(unique_kw) == 1
+                else f"({'|'.join(unique_kw)})"
+            )
+        if episodes:
+            unique_eps = sorted(set(episodes))
+            parts.append(
+                str(unique_eps[0])
+                if len(unique_eps) == 1
+                else f"({'|'.join(str(episode) for episode in unique_eps)})"
+            )
+        return " ".join(part for part in parts if part)
 
     def _parse_rss_response(self, xml_text: str) -> List[SearchResult]:
         """Parse Nyaa RSS XML response into SearchResult objects."""
