@@ -5,6 +5,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring, register_namesp
 
 from app.config import settings
 from app.models import SearchResult
+from app.services.nyaa import TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH
 
 TORZNAB_NS = "http://torznab.com/schemas/2015/feed"
 ATOM_NS = "http://www.w3.org/2005/Atom"
@@ -57,9 +58,9 @@ class TorznabRenderer:
     <server version="1.0" title="AnimeSonarrProxy" />
     <limits max="100" default="100"/>
     <searching>
-        <search available="yes" supportedParams="q"/>
-        <tv-search available="yes" supportedParams="q,tvdbid,season,ep"/>
-        <movie-search available="yes" supportedParams="q,tmdbid,imdbid,year"/>
+        <search available="yes" supportedParams="q,cat"/>
+        <tv-search available="yes" supportedParams="q,tvdbid,season,ep,cat"/>
+        <movie-search available="yes" supportedParams="q,tmdbid,imdbid,year,cat"/>
     </searching>
     <categories>
         <category id="2000" name="Movies">
@@ -67,9 +68,10 @@ class TorznabRenderer:
         </category>
         <category id="5000" name="TV">
             <subcat id="5070" name="Anime"/>
+            <subcat id="%s" name="Live Action/English-translated"/>
         </category>
     </categories>
-</caps>"""
+</caps>""" % TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH
 
     def _item(
         self,

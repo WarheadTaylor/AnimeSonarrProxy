@@ -32,9 +32,8 @@ async def lifespan(app: FastAPI):
         f"Torznab default language metadata: {settings.TORZNAB_DEFAULT_LANGUAGE or 'disabled'}"
     )
     logger.info(
-        "Nyaa search defaults: url=%s category=%s no_remakes=%s trusted_only=%s",
+        "Nyaa search defaults: url=%s no_remakes=%s trusted_only=%s",
         settings.NYAA_URL,
-        settings.NYAA_CATEGORY,
         settings.NYAA_NO_REMAKES,
         settings.NYAA_TRUSTED_ONLY,
     )

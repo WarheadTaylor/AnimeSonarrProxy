@@ -26,6 +26,7 @@ async def torznab_api(
     imdbid: Optional[str] = Query(None, description="IMDb ID"),
     year: Optional[int] = Query(None, description="Release year"),
     apikey: Optional[str] = Query(None, description="API key"),
+    cat: Optional[str] = Query(None, description="Comma-separated category IDs"),
     limit: int = Query(100, description="Result limit"),
     offset: int = Query(0, description="Result offset"),
 ) -> Response:
@@ -38,15 +39,20 @@ async def torznab_api(
 
     limit = max(0, min(limit, settings.MAX_RESULTS_PER_QUERY))
     offset = max(0, offset)
+    categories = parse_categories(cat)
 
     if t == "tvsearch":
-        return await handle_tvsearch(tvdbid, season, ep, q, limit, offset)
+        return await handle_tvsearch(tvdbid, season, ep, q, limit, offset, categories)
     if t == "movie":
-        return await handle_movie_search(tmdbid, imdbid, q, year, limit, offset)
+        return await handle_movie_search(
+            tmdbid, imdbid, q, year, limit, offset, categories
+        )
     if t == "search":
         if not q:
             return create_empty_rss()
-        return await handle_search(q, limit, offset, season=season, episode=ep)
+        return await handle_search(
+            q, limit, offset, season=season, episode=ep, categories=categories
+        )
 
     raise HTTPException(status_code=400, detail=f"Unsupported query type: {t}")
 
@@ -56,6 +62,30 @@ def handle_caps() -> Response:
     return Response(content=torznab_renderer.caps(), media_type="application/xml")
 
 
+def parse_categories(raw_categories: Optional[str]) -> Optional[list[int]]:
+    """Parse Torznab cat parameter into category IDs."""
+    if not raw_categories:
+        return None
+
+    categories: list[int] = []
+    seen = set()
+    for raw_category in raw_categories.split(","):
+        raw_category = raw_category.strip()
+        if not raw_category:
+            continue
+        try:
+            category = int(raw_category)
+        except ValueError:
+            logger.warning("Ignoring invalid Torznab category %r", raw_category)
+            continue
+        if category in seen:
+            continue
+        seen.add(category)
+        categories.append(category)
+
+    return categories or None
+
+
 async def handle_tvsearch(
     tvdb_id: Optional[int],
     season: Optional[int],
@@ -63,15 +93,21 @@ async def handle_tvsearch(
     query: Optional[str],
     limit: int,
     offset: int,
+    categories: Optional[list[int]] = None,
 ) -> Response:
     """Handle a Sonarr TV search."""
     if tvdb_id is None:
         if query:
             return await handle_search(
-                query, limit, offset, season=season, episode=episode
+                query,
+                limit,
+                offset,
+                season=season,
+                episode=episode,
+                categories=categories,
             )
         logger.info("tvsearch test request without identifiers; searching Frieren")
-        return await handle_search("Frieren", limit, offset)
+        return await handle_search("Frieren", limit, offset, categories=categories)
 
     if season is None or episode is None:
         logger.warning("tvsearch for TVDB %s missing season/episode", tvdb_id)
@@ -79,7 +115,7 @@ async def handle_tvsearch(
 
     try:
         results, attrs = await core_search_service.tv_search(
-            tvdb_id, season, episode, limit + offset
+            tvdb_id, season, episode, limit + offset, categories=categories
         )
     except Exception as e:
         logger.error(
@@ -111,6 +147,7 @@ async def handle_movie_search(
     year: Optional[int],
     limit: int,
     offset: int,
+    categories: Optional[list[int]] = None,
 ) -> Response:
     """Handle a Radarr movie search."""
     if tmdb_id is None and imdb_id is None and not query:
@@ -119,7 +156,7 @@ async def handle_movie_search(
 
     try:
         results, attrs = await core_search_service.movie_search(
-            tmdb_id, imdb_id, query, year, limit + offset
+            tmdb_id, imdb_id, query, year, limit + offset, categories=categories
         )
     except Exception as e:
         logger.error(
@@ -151,11 +188,16 @@ async def handle_search(
     offset: int,
     season: Optional[int] = None,
     episode: Optional[int] = None,
+    categories: Optional[list[int]] = None,
 ) -> Response:
     """Handle guarded generic searches."""
     try:
         results = await core_search_service.generic_search(
-            query, limit + offset, season=season, episode=episode
+            query,
+            limit + offset,
+            season=season,
+            episode=episode,
+            categories=categories,
         )
     except Exception as e:
         logger.error(

@@ -19,7 +19,6 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - NYAA_URL=${NYAA_URL:-https://nyaa.si}
-      - NYAA_CATEGORY=${NYAA_CATEGORY:-1_2}
       - NYAA_NO_REMAKES=${NYAA_NO_REMAKES:-true}
       - NYAA_TRUSTED_ONLY=${NYAA_TRUSTED_ONLY:-false}
       - DATA_DIR=/app/data

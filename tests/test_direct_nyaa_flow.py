@@ -5,11 +5,13 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from app.api.torznab import parse_categories
 from app.models import SearchResult
 from app.services import core as core_module
 from app.services.core import CoreSearchService
 from app.services.metadata import MovieSearchContext
 from app.services.nyaa import NyaaClient
+from app.services.nyaa import TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH
 from app.services.release_matcher import release_matcher
 from app.services.release_parser import release_parser
 from app.services.torznab_renderer import TORZNAB_NS, TorznabRenderer
@@ -62,11 +64,24 @@ class RecordingNyaaClient:
     def __init__(self, results: list[SearchResult]):
         self.results = results
         self.search_queries: list[tuple[str, int | None]] = []
+        self.search_calls: list[dict[str, object]] = []
         self.search_multi_calls: list[dict[str, object]] = []
 
-    async def search(self, query: str, limit: int | None = None):
+    async def search(
+        self,
+        query: str,
+        limit: int | None = None,
+        categories: list[int] | None = None,
+    ):
         """Record a direct search query and return canned results."""
         self.search_queries.append((query, limit))
+        self.search_calls.append(
+            {
+                "query": query,
+                "limit": limit,
+                "categories": categories,
+            }
+        )
         return self.results
 
     async def search_multi(
@@ -75,6 +90,7 @@ class RecordingNyaaClient:
         episodes: list[int] | None = None,
         keywords: list[str] | None = None,
         limit: int | None = None,
+        categories: list[int] | None = None,
     ):
         """Record a combined search request and return canned results."""
         self.search_multi_calls.append(
@@ -83,6 +99,7 @@ class RecordingNyaaClient:
                 "episodes": episodes,
                 "keywords": keywords,
                 "limit": limit,
+                "categories": categories,
             }
         )
         return self.results
@@ -195,6 +212,161 @@ def test_missing_and_malformed_nyaa_dates_are_timezone_aware_and_rankable():
     assert len(ranked) == 3
 
 
+def test_nyaa_selected_categories_returns_empty_without_torznab_categories():
+    """Searches without selected supported categories should not hit Nyaa."""
+    assert NyaaClient()._selected_categories() == []
+
+
+def test_nyaa_selected_categories_ignores_unknown_torznab_categories():
+    """Unknown Torznab categories should not fall back to a Nyaa category."""
+    assert NyaaClient()._selected_categories([999999]) == []
+
+
+def test_nyaa_selected_categories_can_use_torznab_category_selection():
+    """Selected Torznab live-action category should map to Nyaa 4_1."""
+    assert NyaaClient()._selected_categories(
+        [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+    ) == ["4_1"]
+
+
+def test_parse_categories_dedupes_and_ignores_invalid_values():
+    """Torznab cat parsing should tolerate comma-separated manager input."""
+    assert parse_categories("5070, 100041, invalid,5070") == [5070, 100041]
+
+
+@pytest.mark.asyncio
+async def test_nyaa_search_without_selected_category_skips_request(monkeypatch):
+    """No selected supported category means no Nyaa request."""
+    client = NyaaClient()
+
+    async def fake_search_category(query, category, filter_code, limit):
+        raise AssertionError("Nyaa should not be searched without a category")
+
+    monkeypatch.setattr(client, "_search_category", fake_search_category)
+
+    assert await client.search("Kingdom", limit=25) == []
+
+
+@pytest.mark.asyncio
+async def test_generic_search_passes_selected_torznab_categories(monkeypatch):
+    """Core generic searches should preserve manager-selected categories."""
+    nyaa = RecordingNyaaClient([make_result("Kingdom live action")])
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    await CoreSearchService().generic_search(
+        "Kingdom",
+        limit=10,
+        categories=[TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+    )
+
+    assert nyaa.search_calls == [
+        {
+            "query": "Kingdom",
+            "limit": 10,
+            "categories": [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nyaa_multi_category_search_calls_each_category(monkeypatch):
+    """Selected categories should fan out to one Nyaa request per category."""
+    client = NyaaClient()
+    calls = []
+
+    async def fake_search_category(query, category, filter_code, limit):
+        calls.append((query, category, filter_code, limit))
+        return []
+
+    monkeypatch.setattr(client, "_search_category", fake_search_category)
+
+    await client.search(
+        "Kingdom", limit=25, categories=[5070, TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+    )
+
+    assert [call[1] for call in calls] == ["1_2", "4_1"]
+    assert all(call[0] == "Kingdom" for call in calls)
+    assert all(call[3] == 25 for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_nyaa_multi_category_search_dedupes_by_info_hash(monkeypatch):
+    """Duplicate info hashes across categories should keep the best-ranked result."""
+    client = NyaaClient()
+    lower = make_result(
+        "Live Action lower",
+        guid="https://nyaa.si/view/lower",
+        info_hash="same-hash",
+        seeders=2,
+    )
+    higher = make_result(
+        "Live Action higher",
+        guid="https://nyaa.si/view/higher",
+        info_hash="same-hash",
+        seeders=9,
+    )
+
+    async def fake_search_category(query, category, filter_code, limit):
+        return [lower] if category == "1_2" else [higher]
+
+    monkeypatch.setattr(client, "_search_category", fake_search_category)
+
+    results = await client.search(
+        "Kingdom", limit=25, categories=[5070, TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+    )
+
+    assert results == [higher]
+
+
+@pytest.mark.asyncio
+async def test_nyaa_multi_category_search_dedupes_by_guid(monkeypatch):
+    """Duplicate GUIDs should be deduped when no info hash is available."""
+    client = NyaaClient()
+    older = make_result(
+        "Older same guid",
+        guid="https://nyaa.si/view/same",
+        pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        seeders=4,
+    )
+    newer = make_result(
+        "Newer same guid",
+        guid="https://nyaa.si/view/same",
+        pub_date=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        seeders=4,
+    )
+
+    async def fake_search_category(query, category, filter_code, limit):
+        return [older] if category == "1_2" else [newer]
+
+    monkeypatch.setattr(client, "_search_category", fake_search_category)
+
+    results = await client.search(
+        "Kingdom", limit=25, categories=[5070, TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+    )
+
+    assert results == [newer]
+
+
+@pytest.mark.asyncio
+async def test_nyaa_multi_category_search_sorts_and_limits_after_merge(monkeypatch):
+    """Final limit should apply after all category results are merged and ranked."""
+    client = NyaaClient()
+    low = make_result("Low", guid="https://nyaa.si/view/low", seeders=1)
+    high = make_result("High", guid="https://nyaa.si/view/high", seeders=20)
+    mid = make_result("Mid", guid="https://nyaa.si/view/mid", seeders=10)
+
+    async def fake_search_category(query, category, filter_code, limit):
+        return [low, high] if category == "1_2" else [mid]
+
+    monkeypatch.setattr(client, "_search_category", fake_search_category)
+
+    results = await client.search(
+        "Kingdom", limit=2, categories=[5070, TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
+    )
+
+    assert results == [high, mid]
+
+
 def test_torznab_renderer_includes_expected_metadata_attrs():
     """Renderer should preserve Torznab attrs expected by Sonarr and Radarr."""
     result = make_result(
@@ -239,3 +411,16 @@ def test_torznab_renderer_includes_expected_metadata_attrs():
     assert attrs["imdbid"] == "tt16428256"
     assert attrs["year"] == "2022"
     assert attrs["language"] == "English"
+
+
+def test_torznab_caps_exposes_live_action_category():
+    """Caps should expose selectable category metadata to indexer clients."""
+    root = ET.fromstring(TorznabRenderer().caps())
+    live_action = root.find(
+        ".//category[@id='5000']/subcat[@id='100041'][@name='Live Action/English-translated']"
+    )
+    tv_search = root.find(".//tv-search")
+
+    assert live_action is not None
+    assert tv_search is not None
+    assert "cat" in tv_search.attrib["supportedParams"].split(",")

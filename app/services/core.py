@@ -17,7 +17,12 @@ class CoreSearchService:
     """Coordinates metadata resolution, Nyaa search, matching, and normalization."""
 
     async def tv_search(
-        self, tvdb_id: int, season: int, episode: int, limit: int
+        self,
+        tvdb_id: int,
+        season: int,
+        episode: int,
+        limit: int,
+        categories: Optional[list[int]] = None,
     ) -> tuple[list[SearchResult], dict[str, object]]:
         """Search Nyaa for a Sonarr TV request."""
         context = await metadata_resolver.resolve_tv(tvdb_id, season, episode)
@@ -32,6 +37,7 @@ class CoreSearchService:
                 ),
                 keywords=["OVA", "OAD", "Special"],
                 limit=limit,
+                categories=categories,
             )
         else:
             results = await nyaa_client.search_multi(
@@ -40,6 +46,7 @@ class CoreSearchService:
                     [context.absolute_episode] if context.absolute_episode else None
                 ),
                 limit=limit,
+                categories=categories,
             )
 
         matched = [
@@ -60,6 +67,7 @@ class CoreSearchService:
         query: Optional[str],
         year: Optional[int],
         limit: int,
+        categories: Optional[list[int]] = None,
     ) -> tuple[list[SearchResult], dict[str, object]]:
         """Search Nyaa for a Radarr movie request."""
         context = await metadata_resolver.resolve_movie(tmdb_id, imdb_id, query, year)
@@ -74,12 +82,14 @@ class CoreSearchService:
             titles=context.search_titles,
             keywords=keywords if context.year else None,
             limit=limit,
+            categories=categories,
         )
         if context.year:
             results.extend(
                 await nyaa_client.search_multi(
                     titles=context.search_titles,
                     limit=limit,
+                    categories=categories,
                 )
             )
 
@@ -100,9 +110,10 @@ class CoreSearchService:
         limit: int,
         season: Optional[int] = None,
         episode: Optional[int] = None,
+        categories: Optional[list[int]] = None,
     ) -> list[SearchResult]:
         """Run a guarded generic Nyaa search for indexer tests and manual searches."""
-        results = await nyaa_client.search(query, limit=limit)
+        results = await nyaa_client.search(query, limit=limit, categories=categories)
         absolute_episode = self._trailing_episode(query)
         if season is None or episode is None:
             return self._rank(results, limit)

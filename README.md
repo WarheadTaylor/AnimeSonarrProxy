@@ -55,18 +55,28 @@ Manual mapping overrides and the old WebUI are not part of v1 of the rewrite.
 
 ## Nyaa Defaults
 
-The proxy searches Nyaa directly. Default settings are conservative:
+The proxy searches Nyaa directly when the Torznab request includes a supported
+category:
+
+| Torznab category | Nyaa category |
+| --- | --- |
+| `5070` Anime | `1_2` Anime English-translated |
+| `2060` Movies/Anime | `1_2` Anime English-translated |
+| `100041` Live Action/English-translated | `4_1` Live Action English-translated |
+
+If no supported category is selected, the proxy does not search Nyaa.
+
+Default settings are conservative:
 
 ```env
 NYAA_URL=https://nyaa.si
-NYAA_CATEGORY=1_2
 NYAA_NO_REMAKES=true
 NYAA_TRUSTED_ONLY=false
 ```
 
-`NYAA_CATEGORY=1_2` searches Anime English-translated releases. If
-`NYAA_TRUSTED_ONLY=true`, the trusted-only Nyaa filter is used instead of
-no-remakes.
+If `NYAA_TRUSTED_ONLY=true`, the trusted-only Nyaa filter is used instead of
+no-remakes. Otherwise `NYAA_NO_REMAKES=true` uses Nyaa's no-remakes filter for
+selected categories.
 
 ## Configuration
 

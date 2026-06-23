@@ -1,8 +1,9 @@
 """Configuration management for AnimeSonarrProxy."""
 
-from typing import Optional
-from pydantic_settings import BaseSettings
 from pathlib import Path
+from typing import Optional
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -15,7 +16,6 @@ class Settings(BaseSettings):
 
     # Nyaa Settings
     NYAA_URL: str = "https://nyaa.si"
-    NYAA_CATEGORY: str = "1_2"  # Anime - English-translated
     NYAA_NO_REMAKES: bool = True  # Nyaa filter f=1
     NYAA_TRUSTED_ONLY: bool = False  # Nyaa filter f=2; overrides no-remakes
 

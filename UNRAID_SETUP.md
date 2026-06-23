@@ -24,7 +24,6 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - NYAA_URL=https://nyaa.si
-      - NYAA_CATEGORY=1_2
       - NYAA_NO_REMAKES=true
       - NYAA_TRUSTED_ONLY=false
       - SONARR_URL=http://sonarr:8989
@@ -53,6 +52,11 @@ Add a custom Torznab indexer:
 
 Set `SONARR_URL` and `SONARR_API_KEY` when the proxy can reach Sonarr. This lets
 the proxy confirm season/episode and absolute episode metadata.
+
+The proxy searches Nyaa only for selected Torznab categories. Select Anime
+(`5070`) to search Nyaa Anime English-translated (`1_2`), or
+Live Action/English-translated (`100041`) to search Nyaa Live Action
+English-translated (`4_1`).
 
 ## Radarr
 
