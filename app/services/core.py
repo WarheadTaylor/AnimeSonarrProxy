@@ -39,7 +39,7 @@ class CoreSearchService:
                 episodes=(
                     [context.absolute_episode] if context.absolute_episode else None
                 ),
-                keywords=["OVA", "OAD", "Special"],
+                keywords=self._special_keywords(context.episode_title),
                 limit=limit,
                 categories=categories,
             )
@@ -143,6 +143,7 @@ class CoreSearchService:
             season=season,
             episode=episode,
             absolute_episode=absolute_episode,
+            episode_title=None,
             search_titles=[series_title],
             returned_title=series_title,
         )
@@ -213,6 +214,13 @@ class CoreSearchService:
             return None
         episode = int(match.group(1))
         return episode if episode > 0 else None
+
+    def _special_keywords(self, episode_title: Optional[str]) -> list[str]:
+        keywords = ["OVA", "OAD", "Special"]
+        cleaned_title = " ".join((episode_title or "").split())
+        if cleaned_title:
+            keywords.append(cleaned_title)
+        return keywords
 
     def _is_live_action_search(self, categories: Optional[list[int]]) -> bool:
         return bool(categories and TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH in categories)

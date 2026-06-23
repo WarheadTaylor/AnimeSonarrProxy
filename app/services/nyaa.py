@@ -185,16 +185,7 @@ class NyaaClient:
         if not titles:
             return ""
 
-        # Sanitize and quote titles (multi-word titles need quotes)
-        def quote_title(t: str) -> str:
-            # Escape any quotes in the title
-            t = t.replace('"', "")
-            # Quote if contains spaces or special chars
-            if " " in t or any(c in t for c in "|()"):
-                return f'"{t}"'
-            return t
-
-        quoted_titles = [quote_title(t) for t in titles if t.strip()]
+        quoted_titles = [self._quote_search_term(t) for t in titles if t.strip()]
 
         # Build title part
         if len(quoted_titles) == 1:
@@ -214,10 +205,14 @@ class NyaaClient:
         # Build keyword part if provided
         keyword_part = ""
         if keywords:
-            unique_kw = list(dict.fromkeys(keywords))  # Preserve order, remove dupes
+            unique_kw = [
+                self._quote_search_term(keyword)
+                for keyword in dict.fromkeys(keywords)
+                if keyword.strip()
+            ]
             if len(unique_kw) == 1:
                 keyword_part = unique_kw[0]
-            else:
+            elif unique_kw:
                 keyword_part = f"({'|'.join(unique_kw)})"
 
         # Combine parts
@@ -503,12 +498,17 @@ class NyaaClient:
         """Build an unquoted fallback query for Nyaa's stricter RSS search."""
         parts = [title.strip()]
         if keywords:
-            unique_kw = list(dict.fromkeys(keywords))
-            parts.append(
-                unique_kw[0]
-                if len(unique_kw) == 1
-                else f"({'|'.join(unique_kw)})"
-            )
+            unique_kw = [
+                self._quote_search_term(keyword)
+                for keyword in dict.fromkeys(keywords)
+                if keyword.strip()
+            ]
+            if unique_kw:
+                parts.append(
+                    unique_kw[0]
+                    if len(unique_kw) == 1
+                    else f"({'|'.join(unique_kw)})"
+                )
         if episodes:
             unique_eps = sorted(set(episodes))
             parts.append(
@@ -517,6 +517,13 @@ class NyaaClient:
                 else f"({'|'.join(str(episode) for episode in unique_eps)})"
             )
         return " ".join(part for part in parts if part)
+
+    def _quote_search_term(self, term: str) -> str:
+        """Quote a Nyaa search term when it must be matched as a phrase."""
+        cleaned = term.replace('"', "").strip()
+        if " " in cleaned or any(char in cleaned for char in "|()"):
+            return f'"{cleaned}"'
+        return cleaned
 
     def _parse_rss_response(self, xml_text: str) -> List[SearchResult]:
         """Parse Nyaa RSS XML response into SearchResult objects."""

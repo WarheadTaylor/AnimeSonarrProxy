@@ -26,6 +26,7 @@ class TvSearchContext:
     absolute_episode: Optional[int]
     search_titles: list[str]
     returned_title: str
+    episode_title: Optional[str] = None
     is_special: bool = False
     is_live_action: bool = False
     year: Optional[int] = None
@@ -111,6 +112,7 @@ class MetadataResolver:
             season=season,
             episode=episode,
             absolute_episode=absolute_episode,
+            episode_title=episode_info.title if episode_info else None,
             search_titles=titles[:8] if is_live_action else titles[:4],
             returned_title=self._returned_tv_title(
                 episode_info, series_metadata, titles[0]

@@ -23,7 +23,7 @@ class ReleaseMatcher:
             return None
 
         if context.is_special:
-            if not self._is_special_release(parsed):
+            if not self._is_special_release(parsed, context.episode_title):
                 return None
         elif context.is_live_action:
             if not self._matches_live_action_episode(parsed, context):
@@ -78,9 +78,19 @@ class ReleaseMatcher:
                 return title
         return None
 
-    def _is_special_release(self, parsed: ParsedRelease) -> bool:
+    def _is_special_release(
+        self, parsed: ParsedRelease, episode_title: Optional[str] = None
+    ) -> bool:
         lowered = parsed.original_title.lower()
-        return any(term in lowered for term in ("ova", "oad", "special"))
+        if any(term in lowered for term in ("ova", "oad", "special")):
+            return True
+
+        normalized_episode_title = self._normalize_title(episode_title or "")
+        if not normalized_episode_title:
+            return False
+
+        normalized_release_title = self._normalize_title(parsed.original_title)
+        return normalized_episode_title in normalized_release_title
 
     def _matches_tv_episode(
         self, parsed: ParsedRelease, context: TvSearchContext

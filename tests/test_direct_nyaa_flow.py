@@ -63,6 +63,24 @@ class FakeMetadataResolver:
         )
 
 
+class FakeSpecialMetadataResolver:
+    """Fake metadata resolver returning a fixed TV special context."""
+
+    async def resolve_tv(self, tvdb_id, season, episode, is_live_action=False):
+        """Return a special context with a Sonarr episode title."""
+        return TvSearchContext(
+            tvdb_id=tvdb_id,
+            season=season,
+            episode=episode,
+            absolute_episode=episode,
+            episode_title="The Path to Victory",
+            search_titles=["Uma Musume"],
+            returned_title="Uma Musume",
+            is_special=True,
+            is_live_action=is_live_action,
+        )
+
+
 class FakeAnimeDb:
     """Fake anime database with no live-action mappings."""
 
@@ -268,6 +286,46 @@ async def test_movie_search_with_year_keeps_bare_title_retrieval_path(monkeypatc
         call["titles"] == ["Suzume"] and not call["keywords"]
         for call in nyaa.search_multi_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_special_tv_search_includes_episode_title_keyword(monkeypatch):
+    """Sonarr special episode titles should be included in Nyaa special searches."""
+    nyaa = RecordingNyaaClient([])
+    monkeypatch.setattr(core_module, "metadata_resolver", FakeSpecialMetadataResolver())
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    await CoreSearchService().tv_search(12345, 0, 1, limit=25, categories=[5070])
+
+    assert nyaa.search_multi_calls == [
+        {
+            "titles": ["Uma Musume"],
+            "episodes": [1],
+            "keywords": ["OVA", "OAD", "Special", "The Path to Victory"],
+            "limit": 25,
+            "categories": [5070],
+        }
+    ]
+
+
+def test_special_release_can_match_by_episode_title_without_special_keyword():
+    """Special releases may be named with the episode title instead of OVA/Special."""
+    result = make_result("[SubsPlease] Uma Musume - The Path to Victory [1080p]")
+    context = TvSearchContext(
+        tvdb_id=12345,
+        season=0,
+        episode=1,
+        absolute_episode=1,
+        episode_title="The Path to Victory",
+        search_titles=["Uma Musume"],
+        returned_title="Uma Musume",
+        is_special=True,
+    )
+
+    matched = release_matcher.match_tv(result, context)
+
+    assert matched is not None
+    assert matched.title.startswith("[SubsPlease] Uma Musume - S00E01 - 1")
 
 
 @pytest.mark.asyncio
@@ -680,6 +738,17 @@ def test_nyaa_selected_categories_can_use_torznab_category_selection():
     assert NyaaClient()._selected_categories(
         [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH]
     ) == ["4_1"]
+
+
+def test_nyaa_combined_query_quotes_multi_word_special_title_keyword():
+    """Episode-title special keywords should be searched as phrases."""
+    query = NyaaClient().build_combined_query(
+        ["Uma Musume"],
+        episodes=[1],
+        keywords=["OVA", "OAD", "Special", "The Path to Victory"],
+    )
+
+    assert query == '"Uma Musume" (OVA|OAD|Special|"The Path to Victory") 1'
 
 
 def test_nyaa_rss_live_action_category_maps_to_torznab_live_action():
