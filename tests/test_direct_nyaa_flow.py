@@ -1,0 +1,241 @@
+"""Regression coverage for the direct Nyaa search and Torznab rendering flow."""
+
+from datetime import datetime, timezone
+from xml.etree import ElementTree as ET
+
+import pytest
+
+from app.models import SearchResult
+from app.services import core as core_module
+from app.services.core import CoreSearchService
+from app.services.metadata import MovieSearchContext
+from app.services.nyaa import NyaaClient
+from app.services.release_matcher import release_matcher
+from app.services.release_parser import release_parser
+from app.services.torznab_renderer import TORZNAB_NS, TorznabRenderer
+
+
+def make_result(
+    title: str,
+    *,
+    guid: str | None = None,
+    info_hash: str | None = None,
+    pub_date: datetime | None = None,
+    seeders: int = 10,
+    categories: list[int] | None = None,
+) -> SearchResult:
+    """Create a realistic SearchResult without relying on network fixtures."""
+    guid = guid or f"https://nyaa.si/view/{abs(hash(title))}"
+    return SearchResult(
+        title=title,
+        original_title=title,
+        guid=guid,
+        link=f"{guid}.torrent",
+        info_url=guid,
+        pub_date=pub_date or datetime(2026, 1, 1, tzinfo=timezone.utc),
+        size=1024,
+        seeders=seeders,
+        peers=seeders + 1,
+        indexer="nyaa",
+        categories=categories or [5070],
+        info_hash=info_hash,
+    )
+
+
+class FakeMetadataResolver:
+    """Fake metadata resolver returning a fixed movie context."""
+
+    async def resolve_movie(self, tmdb_id, imdb_id, query, year):
+        """Return a movie context using the manager-provided query and year."""
+        return MovieSearchContext(
+            search_titles=[query or "Suzume"],
+            returned_title=query or "Suzume",
+            year=year,
+            tmdb_id=tmdb_id,
+            imdb_id=imdb_id,
+        )
+
+
+class RecordingNyaaClient:
+    """Fake Nyaa client that records core search requests."""
+
+    def __init__(self, results: list[SearchResult]):
+        self.results = results
+        self.search_queries: list[tuple[str, int | None]] = []
+        self.search_multi_calls: list[dict[str, object]] = []
+
+    async def search(self, query: str, limit: int | None = None):
+        """Record a direct search query and return canned results."""
+        self.search_queries.append((query, limit))
+        return self.results
+
+    async def search_multi(
+        self,
+        titles: list[str],
+        episodes: list[int] | None = None,
+        keywords: list[str] | None = None,
+        limit: int | None = None,
+    ):
+        """Record a combined search request and return canned results."""
+        self.search_multi_calls.append(
+            {
+                "titles": titles,
+                "episodes": episodes,
+                "keywords": keywords,
+                "limit": limit,
+            }
+        )
+        return self.results
+
+
+def test_dash_delimited_movie_year_is_not_treated_as_episode():
+    """A movie title like 'Title - 2022' should still match as a movie."""
+    result = make_result("[SubsPlease] Suzume - 2022 [1080p][BDRip]")
+    context = MovieSearchContext(
+        search_titles=["Suzume"],
+        returned_title="Suzume",
+        year=2022,
+        tmdb_id=916224,
+        imdb_id="tt16428256",
+    )
+
+    parsed = release_parser.parse(result.title)
+    matched = release_matcher.match_movie(result, context)
+
+    assert parsed.year == 2022
+    assert parsed.episode_numbers == []
+    assert matched is not None
+    assert matched.title == "Suzume (2022) [1080p][BDRip] -SubsPlease"
+    assert matched.categories == [2000, 2060]
+
+
+@pytest.mark.asyncio
+async def test_movie_search_with_year_keeps_bare_title_retrieval_path(monkeypatch):
+    """Year-qualified movie searches should not rely only on year/movie keywords."""
+    nyaa = RecordingNyaaClient([make_result("[SubsPlease] Suzume [1080p][BDRip]")])
+    monkeypatch.setattr(core_module, "metadata_resolver", FakeMetadataResolver())
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    await CoreSearchService().movie_search(
+        tmdb_id=916224,
+        imdb_id="tt16428256",
+        query="Suzume",
+        year=2022,
+        limit=25,
+    )
+
+    assert any(
+        call["titles"] == ["Suzume"] and not call["keywords"]
+        for call in nyaa.search_multi_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_generic_search_with_season_episode_returns_ranked_raw_results(
+    monkeypatch,
+):
+    """Generic tvsearch fallback should not discard absolute-numbered raw releases."""
+    older = make_result(
+        "[SubsPlease] One Piece - 1156 [1080p]",
+        guid="https://nyaa.si/view/old",
+        info_hash="same-info-hash",
+        pub_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        seeders=5,
+    )
+    newer = make_result(
+        "[SubsPlease] One Piece - 1156 [720p]",
+        guid="https://nyaa.si/view/new",
+        info_hash="same-info-hash",
+        pub_date=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        seeders=7,
+    )
+    lower_ranked = make_result(
+        "[Other] One Piece - 1156 [480p]",
+        guid="https://nyaa.si/view/lower",
+        info_hash="different-info-hash",
+        pub_date=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        seeders=1,
+    )
+    nyaa = RecordingNyaaClient([older, lower_ranked, newer])
+    monkeypatch.setattr(core_module, "nyaa_client", nyaa)
+
+    results = await CoreSearchService().generic_search(
+        "One Piece",
+        limit=10,
+        season=23,
+        episode=1,
+    )
+
+    assert nyaa.search_queries == [("One Piece", 10)]
+    assert [result.guid for result in results] == [
+        "https://nyaa.si/view/new",
+        "https://nyaa.si/view/lower",
+    ]
+
+
+def test_missing_and_malformed_nyaa_dates_are_timezone_aware_and_rankable():
+    """Fallback Nyaa dates must not mix naive and aware datetimes during ranking."""
+    client = NyaaClient()
+    missing = client._parse_date("")
+    malformed = client._parse_date("not a date")
+    parsed = client._parse_date("Tue, 09 Sep 2025 20:24:10 -0000")
+
+    assert missing.tzinfo is not None
+    assert malformed.tzinfo is not None
+    assert parsed.tzinfo is not None
+
+    results = [
+        make_result("missing date", pub_date=missing, seeders=1),
+        make_result("malformed date", pub_date=malformed, seeders=1),
+        make_result("parsed date", pub_date=parsed, seeders=1),
+    ]
+
+    ranked = CoreSearchService()._rank(results, limit=10)
+
+    assert len(ranked) == 3
+
+
+def test_torznab_renderer_includes_expected_metadata_attrs():
+    """Renderer should preserve Torznab attrs expected by Sonarr and Radarr."""
+    result = make_result(
+        "Suzume (2022) [1080p][BDRip] -SubsPlease",
+        guid="https://nyaa.si/view/916224",
+        info_hash="abc123",
+        categories=[2000, 2060],
+    )
+
+    xml = TorznabRenderer().render(
+        [result],
+        tvdb_id=12345,
+        season=1,
+        episode=2,
+        tmdb_id=916224,
+        imdb_id="tt16428256",
+        year=2022,
+    )
+
+    root = ET.fromstring(xml)
+    attrs = {
+        attr.attrib["name"]: attr.attrib["value"]
+        for attr in root.findall(f".//{{{TORZNAB_NS}}}attr")
+    }
+    categories = [
+        attr.attrib["value"]
+        for attr in root.findall(f".//{{{TORZNAB_NS}}}attr")
+        if attr.attrib["name"] == "category"
+    ]
+
+    assert attrs["size"] == "1024"
+    assert attrs["seeders"] == "10"
+    assert attrs["peers"] == "11"
+    assert attrs["downloadvolumefactor"] == "1"
+    assert attrs["uploadvolumefactor"] == "1"
+    assert attrs["infohash"] == "abc123"
+    assert categories == ["2000", "2060"]
+    assert attrs["tvdbid"] == "12345"
+    assert attrs["season"] == "1"
+    assert attrs["episode"] == "2"
+    assert attrs["tmdbid"] == "916224"
+    assert attrs["imdbid"] == "tt16428256"
+    assert attrs["year"] == "2022"
+    assert attrs["language"] == "English"
