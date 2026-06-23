@@ -106,8 +106,10 @@ async def handle_tvsearch(
                 episode=episode,
                 categories=categories,
             )
-        logger.info("tvsearch test request without identifiers; searching Frieren")
-        return await handle_search("Frieren", limit, offset, categories=categories)
+        logger.info(
+            "tvsearch test request without identifiers; searching latest selected category releases"
+        )
+        return await handle_search("", limit, offset, categories=categories)
 
     if season is None or episode is None:
         logger.warning("tvsearch for TVDB %s missing season/episode", tvdb_id)

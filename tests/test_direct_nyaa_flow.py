@@ -5,6 +5,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from app.api import torznab as torznab_module
 from app.api.torznab import parse_categories
 from app.models import SearchResult
 from app.services import core as core_module
@@ -99,6 +100,34 @@ class RecordingNyaaClient:
                 "episodes": episodes,
                 "keywords": keywords,
                 "limit": limit,
+                "categories": categories,
+            }
+        )
+        return self.results
+
+
+class RecordingCoreSearchService:
+    """Fake core service that records generic search requests."""
+
+    def __init__(self, results: list[SearchResult]):
+        self.results = results
+        self.generic_search_calls: list[dict[str, object]] = []
+
+    async def generic_search(
+        self,
+        query: str,
+        limit: int,
+        season: int | None = None,
+        episode: int | None = None,
+        categories: list[int] | None = None,
+    ):
+        """Record a generic search call and return canned results."""
+        self.generic_search_calls.append(
+            {
+                "query": query,
+                "limit": limit,
+                "season": season,
+                "episode": episode,
                 "categories": categories,
             }
         )
@@ -232,6 +261,33 @@ def test_nyaa_selected_categories_can_use_torznab_category_selection():
 def test_parse_categories_dedupes_and_ignores_invalid_values():
     """Torznab cat parsing should tolerate comma-separated manager input."""
     assert parse_categories("5070, 100041, invalid,5070") == [5070, 100041]
+
+
+@pytest.mark.asyncio
+async def test_tvsearch_test_request_uses_latest_selected_category(monkeypatch):
+    """Indexer tests without identifiers should not hardcode an anime title."""
+    core = RecordingCoreSearchService([make_result("Latest live action")])
+    monkeypatch.setattr(torznab_module, "core_search_service", core)
+
+    await torznab_module.handle_tvsearch(
+        tvdb_id=None,
+        season=None,
+        episode=None,
+        query=None,
+        limit=100,
+        offset=0,
+        categories=[TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+    )
+
+    assert core.generic_search_calls == [
+        {
+            "query": "",
+            "limit": 100,
+            "season": None,
+            "episode": None,
+            "categories": [TORZNAB_CATEGORY_LIVE_ACTION_ENGLISH],
+        }
+    ]
 
 
 @pytest.mark.asyncio
