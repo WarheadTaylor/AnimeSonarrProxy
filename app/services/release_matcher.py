@@ -9,12 +9,12 @@ from app.services.release_parser import ParsedRelease, release_parser
 
 
 class ReleaseMatcher:
-    """Filters Nyaa results to confident Sonarr/Radarr matches."""
+    """Filters release results to confident Sonarr/Radarr matches."""
 
     def match_tv(
         self, result: SearchResult, context: TvSearchContext
     ) -> Optional[SearchResult]:
-        """Return a normalized TV result when the Nyaa title confidently matches."""
+        """Return a normalized TV result when the release title confidently matches."""
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None
@@ -41,7 +41,7 @@ class ReleaseMatcher:
     def match_movie(
         self, result: SearchResult, context: MovieSearchContext
     ) -> Optional[SearchResult]:
-        """Return a normalized movie result when the Nyaa title confidently matches."""
+        """Return a normalized movie result when the release title confidently matches."""
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None

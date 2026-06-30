@@ -48,6 +48,10 @@ class SearchResult(BaseModel):
     nyaa_category_id: Optional[str] = None
     trusted: bool = False
     remake: bool = False
+    protocol: str = "torrent"
+    provider_id: Optional[str] = None
+    provider_guid: Optional[str] = None
+    provider_attrs: Dict[str, str] = Field(default_factory=dict)
 
 
 class EpisodeInfo(BaseModel):

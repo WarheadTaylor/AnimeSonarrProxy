@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedRelease:
-    """Parsed metadata extracted from a Nyaa release title."""
+    """Parsed metadata extracted from an anime release title."""
 
     original_title: str
     release_group: Optional[str] = None
@@ -37,10 +37,10 @@ class ParsedRelease:
 
 
 class ReleaseParser:
-    """Parses Nyaa release titles into the subset of metadata used by the proxy."""
+    """Parses anime release titles into the subset of metadata used by the proxy."""
 
     def parse(self, title: str) -> ParsedRelease:
-        """Parse a Nyaa release title."""
+        """Parse an anime release title."""
         try:
             parsed = aniparse.parse(title) or {}
         except Exception as exc:

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import torznab
+from app.api import newznab, torznab
 from app.services.anime_db import anime_db
 from app.services.sonarr import sonarr_client
 from app.services.radarr import radarr_client
@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
         f"AnimeSonarrProxy started successfully on {settings.HOST}:{settings.PORT}"
     )
     logger.info(f"Torznab API: http://{settings.HOST}:{settings.PORT}/api")
+    logger.info(f"Newznab API: http://{settings.HOST}:{settings.PORT}/newznab")
 
     yield
 
@@ -74,7 +75,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="AnimeSonarrProxy",
-    description="Torznab-compatible proxy for anime title normalization from Nyaa",
+    description="Torznab/Newznab-compatible proxy for anime title normalization",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -90,6 +91,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(torznab.router, tags=["Torznab"])
+app.include_router(newznab.router, tags=["Newznab"])
 
 
 if __name__ == "__main__":
