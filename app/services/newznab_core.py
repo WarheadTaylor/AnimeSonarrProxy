@@ -71,9 +71,58 @@ class NewznabCoreService:
                 )
             )
 
+        series_title, absolute_episode = self._split_trailing_episode(query)
+
         if season is not None and episode is not None:
-            results = self._filter_episode_mismatches(results, season, episode)
+            if series_title and absolute_episode is not None:
+                context = TvSearchContext(
+                    tvdb_id=0,
+                    season=season,
+                    episode=episode,
+                    absolute_episode=absolute_episode,
+                    episode_title=None,
+                    search_titles=[series_title],
+                    returned_title=series_title,
+                )
+                matched = [
+                    normalized
+                    for result in results
+                    if (normalized := release_matcher.match_tv(result, context))
+                    is not None
+                ]
+                return self._rank(matched, limit, providers)
+            return self._rank(
+                self._filter_episode_mismatches(results, season, episode),
+                limit,
+                providers,
+            )
+
+        if series_title and absolute_episode is not None:
+            matched = [
+                normalized
+                for result in results
+                if (
+                    normalized := release_matcher.match_tv_absolute(
+                        result, series_title, absolute_episode
+                    )
+                )
+                is not None
+            ]
+            if matched:
+                return self._rank(matched, limit, providers)
         return self._rank(results, limit, providers)
+
+    def _split_trailing_episode(
+        self, query: str
+    ) -> tuple[Optional[str], Optional[int]]:
+        """Split a Sonarr-style '<title> <episode>' query into title and episode."""
+        match = re.search(r"^(?P<title>.*\S)\s+0*(?P<ep>\d{1,4})\s*$", query or "")
+        if not match:
+            return None, None
+        episode = int(match.group("ep"))
+        if episode <= 0 or 1900 <= episode <= 2099:
+            return None, None
+        return match.group("title").strip(), episode
 
     def _tv_params(
         self,
@@ -127,6 +176,7 @@ class NewznabCoreService:
         for title in context.search_titles:
             if context.absolute_episode:
                 queries.append(f"{title} {context.absolute_episode}")
+                queries.append(f"{title} {context.absolute_episode:02d}")
             queries.append(f"{title} S{context.season:02d}E{context.episode:02d}")
             if context.is_special:
                 for keyword in self._special_keywords(context.episode_title):

@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     NEWZNAB_ID: str = "newznab"
     NEWZNAB_NAME: str = "Newznab"
     NEWZNAB_CATEGORIES: List[int] = Field(default_factory=lambda: [5070])
-    NEWZNAB_MAX_QUERY_VARIANTS: int = 8
+    NEWZNAB_MAX_QUERY_VARIANTS: int = 12
     NEWZNAB_DEFAULT_CATEGORIES: List[int] = Field(default_factory=lambda: [5070])
     PUBLIC_BASE_URL: Optional[str] = None
 
