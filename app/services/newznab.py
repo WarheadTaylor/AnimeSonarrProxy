@@ -47,6 +47,20 @@ def get_newznab_provider(provider_id: str) -> Optional[NewznabProviderSettings]:
 class NewznabClient:
     """Client for Newznab-compatible upstream providers."""
 
+    def __init__(self) -> None:
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def start(self) -> None:
+        """Create the shared HTTP client used for upstream requests."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+
+    async def close(self) -> None:
+        """Close the shared upstream HTTP client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
     async def search(
         self,
         provider: NewznabProviderSettings,
@@ -56,12 +70,13 @@ class NewznabClient:
         """Search one upstream provider and parse Newznab RSS results."""
         request_params = self._request_params(provider, params)
         try:
-            async with httpx.AsyncClient(timeout=provider.timeout) as client:
-                response = await client.get(
-                    provider.url.rstrip("/"),
-                    params=request_params,
-                )
-                response.raise_for_status()
+            client = await self._get_client()
+            response = await client.get(
+                provider.url.rstrip("/"),
+                params=request_params,
+                timeout=provider.timeout,
+            )
+            response.raise_for_status()
         except httpx.HTTPError as exc:
             logger.warning("Newznab provider %s search failed: %s", provider.id, exc)
             return []
@@ -72,17 +87,24 @@ class NewznabClient:
         self, provider: NewznabProviderSettings, provider_guid: str
     ) -> httpx.Response:
         """Fetch one NZB from an upstream provider."""
-        async with httpx.AsyncClient(timeout=provider.timeout) as client:
-            response = await client.get(
-                provider.url.rstrip("/"),
-                params={
-                    "t": "get",
-                    "apikey": provider.api_key,
-                    "id": provider_guid,
-                },
-            )
-            response.raise_for_status()
-            return response
+        client = await self._get_client()
+        response = await client.get(
+            provider.url.rstrip("/"),
+            params={
+                "t": "get",
+                "apikey": provider.api_key,
+                "id": provider_guid,
+            },
+            timeout=provider.timeout,
+        )
+        response.raise_for_status()
+        return response
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared client, initializing it for direct service use."""
+        await self.start()
+        assert self._client is not None
+        return self._client
 
     def parse_rss(
         self,

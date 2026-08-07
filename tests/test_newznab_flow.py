@@ -1,5 +1,6 @@
 """Regression coverage for Newznab provider proxy support."""
 
+import asyncio
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
@@ -11,7 +12,12 @@ from fastapi.testclient import TestClient
 from app.api import newznab as newznab_module
 from app.config import NewznabProviderSettings, Settings, settings
 from app.models import SearchResult
+from app.services.metadata import TvSearchContext
 from app.services.newznab import NEWZNAB_NS, NewznabClient, configured_newznab_providers
+from app.services.newznab_core import (
+    NEWZNAB_FALLBACK_CONCURRENCY,
+    NewznabCoreService,
+)
 from app.services.newznab_renderer import NewznabRenderer
 
 
@@ -44,6 +50,30 @@ def make_usenet_result() -> SearchResult:
         provider_id="nzbgeek",
         provider_guid="abc123",
         provider_attrs={"guid": "abc123", "grabs": "5"},
+    )
+
+
+def make_provider_result(provider_id: str, guid: str) -> SearchResult:
+    """Create a matching result owned by a specific upstream provider."""
+    return make_usenet_result().model_copy(
+        update={
+            "guid": f"{provider_id}:{guid}",
+            "provider_id": provider_id,
+            "provider_guid": guid,
+            "provider_attrs": {"guid": guid},
+        }
+    )
+
+
+def make_tv_context() -> TvSearchContext:
+    """Create a One Piece absolute-numbering TV search context."""
+    return TvSearchContext(
+        tvdb_id=81797,
+        season=23,
+        episode=1,
+        absolute_episode=1156,
+        search_titles=["One Piece", "Wan Pisu"],
+        returned_title="One Piece",
     )
 
 
@@ -88,6 +118,125 @@ def test_configured_newznab_providers_ignores_disabled(monkeypatch):
     providers = configured_newznab_providers()
 
     assert [provider.id for provider in providers] == ["enabled"]
+
+
+@pytest.mark.asyncio
+async def test_newznab_tv_search_uses_concurrent_provider_fast_paths(monkeypatch):
+    """Providers should run concurrently and skip fallbacks after a primary match."""
+    providers = [
+        make_provider(id="first", name="First"),
+        make_provider(id="second", name="Second"),
+    ]
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", providers)
+    monkeypatch.setattr(settings, "NEWZNAB_URL", None)
+    monkeypatch.setattr(settings, "NEWZNAB_API_KEY", None)
+
+    async def fake_resolve_tv(tvdb_id, season, episode):
+        return make_tv_context()
+
+    active = 0
+    max_active = 0
+    calls = []
+
+    async def fake_search(provider, params, fallback_categories=None):
+        nonlocal active, max_active
+        calls.append((provider.id, params["t"]))
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return [make_provider_result(provider.id, f"{provider.id}-guid")]
+
+    service = NewznabCoreService()
+    monkeypatch.setattr(
+        "app.services.newznab_core.metadata_resolver.resolve_tv", fake_resolve_tv
+    )
+    monkeypatch.setattr("app.services.newznab_core.newznab_client.search", fake_search)
+
+    results = await service.tv_search(81797, 23, 1, 100)
+
+    assert max_active == 2
+    assert sorted(calls) == [("first", "tvsearch"), ("second", "tvsearch")]
+    assert {result.provider_id for result in results} == {"first", "second"}
+
+
+@pytest.mark.asyncio
+async def test_newznab_tv_search_bounds_fallback_concurrency(monkeypatch):
+    """A primary miss should run all configured fallbacks with bounded concurrency."""
+    provider = make_provider()
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [provider])
+    monkeypatch.setattr(settings, "NEWZNAB_URL", None)
+    monkeypatch.setattr(settings, "NEWZNAB_API_KEY", None)
+    monkeypatch.setattr(settings, "NEWZNAB_MAX_QUERY_VARIANTS", 5)
+
+    async def fake_resolve_tv(tvdb_id, season, episode):
+        return make_tv_context()
+
+    active = 0
+    max_active = 0
+    fallback_calls = 0
+
+    async def fake_search(provider, params, fallback_categories=None):
+        nonlocal active, max_active, fallback_calls
+        if params["t"] == "tvsearch":
+            return []
+        fallback_calls += 1
+        call_number = fallback_calls
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return [make_provider_result(provider.id, f"fallback-{call_number}")]
+
+    service = NewznabCoreService()
+    monkeypatch.setattr(
+        "app.services.newznab_core.metadata_resolver.resolve_tv", fake_resolve_tv
+    )
+    monkeypatch.setattr("app.services.newznab_core.newznab_client.search", fake_search)
+
+    expected_fallbacks = len(
+        service._tv_params(provider, make_tv_context(), 100, None)
+    ) - 1
+    results = await service.tv_search(81797, 23, 1, 100)
+
+    assert fallback_calls == expected_fallbacks
+    assert max_active == NEWZNAB_FALLBACK_CONCURRENCY
+    assert len(results) == expected_fallbacks
+
+
+@pytest.mark.asyncio
+async def test_newznab_client_reuses_shared_http_client(monkeypatch):
+    """Repeated upstream requests should reuse one HTTP connection pool."""
+    instances = []
+
+    class FakeAsyncClient:
+        def __init__(self):
+            self.is_closed = False
+            self.calls = 0
+            instances.append(self)
+
+        async def get(self, url, params=None, timeout=None):
+            self.calls += 1
+            return httpx.Response(
+                200,
+                text="<rss><channel /></rss>",
+                request=httpx.Request("GET", url),
+            )
+
+        async def aclose(self):
+            self.is_closed = True
+
+    monkeypatch.setattr("app.services.newznab.httpx.AsyncClient", FakeAsyncClient)
+    client = NewznabClient()
+    provider = make_provider()
+
+    await client.search(provider, {"t": "search", "q": "one piece"})
+    await client.search(provider, {"t": "search", "q": "one piece 1156"})
+    await client.close()
+
+    assert len(instances) == 1
+    assert instances[0].calls == 2
+    assert instances[0].is_closed is True
 
 
 def test_newznab_client_parses_rss_item():

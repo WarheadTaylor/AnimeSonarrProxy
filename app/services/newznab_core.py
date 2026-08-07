@@ -1,5 +1,6 @@
 """Core Sonarr Newznab request flow for upstream Usenet providers."""
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -12,6 +13,8 @@ from app.services.release_matcher import release_matcher
 from app.services.release_parser import release_parser
 
 logger = logging.getLogger(__name__)
+
+NEWZNAB_FALLBACK_CONCURRENCY = 3
 
 
 class NewznabCoreService:
@@ -31,22 +34,20 @@ class NewznabCoreService:
             return []
 
         providers = configured_newznab_providers()
-        results: list[SearchResult] = []
-        for provider in providers:
-            for params in self._tv_params(provider, context, limit, categories):
-                results.extend(
-                    await newznab_client.search(
-                        provider,
-                        params,
-                        fallback_categories=self._categories(provider, categories),
-                    )
+        fallback_semaphore = asyncio.Semaphore(NEWZNAB_FALLBACK_CONCURRENCY)
+        provider_results = await asyncio.gather(
+            *(
+                self._search_tv_provider(
+                    provider,
+                    context,
+                    limit,
+                    categories,
+                    fallback_semaphore,
                 )
-
-        matched = [
-            normalized
-            for result in results
-            if (normalized := release_matcher.match_tv(result, context)) is not None
-        ]
+                for provider in providers
+            )
+        )
+        matched = [result for results in provider_results for result in results]
         return self._rank(matched, limit, providers)
 
     async def generic_search(
@@ -60,16 +61,17 @@ class NewznabCoreService:
     ) -> list[SearchResult]:
         """Run a generic Newznab provider search."""
         providers = configured_newznab_providers()
-        results: list[SearchResult] = []
-        for provider in providers:
-            params = self._generic_params(provider, query, limit, categories)
-            results.extend(
-                await newznab_client.search(
+        provider_results = await asyncio.gather(
+            *(
+                newznab_client.search(
                     provider,
-                    params,
+                    self._generic_params(provider, query, limit, categories),
                     fallback_categories=self._categories(provider, categories),
                 )
+                for provider in providers
             )
+        )
+        results = [result for batch in provider_results for result in batch]
 
         series_title, absolute_episode = self._split_trailing_episode(query)
 
@@ -111,6 +113,53 @@ class NewznabCoreService:
             if matched:
                 return self._rank(matched, limit, providers)
         return self._rank(results, limit, providers)
+
+    async def _search_tv_provider(
+        self,
+        provider: NewznabProviderSettings,
+        context: TvSearchContext,
+        limit: int,
+        categories: Optional[list[int]],
+        fallback_semaphore: asyncio.Semaphore,
+    ) -> list[SearchResult]:
+        """Search one provider, using title fallbacks only when TVDB search misses."""
+        params = self._tv_params(provider, context, limit, categories)
+        fallback_categories = self._categories(provider, categories)
+        primary_results = await newznab_client.search(
+            provider,
+            params[0],
+            fallback_categories=fallback_categories,
+        )
+        primary_matches = self._match_tv_results(primary_results, context)
+        if primary_matches:
+            return primary_matches
+
+        async def search_fallback(
+            fallback_params: dict[str, object],
+        ) -> list[SearchResult]:
+            async with fallback_semaphore:
+                return await newznab_client.search(
+                    provider,
+                    fallback_params,
+                    fallback_categories=fallback_categories,
+                )
+
+        fallback_results = await asyncio.gather(
+            *(search_fallback(fallback_params) for fallback_params in params[1:])
+        )
+        return self._match_tv_results(
+            [result for batch in fallback_results for result in batch], context
+        )
+
+    def _match_tv_results(
+        self, results: list[SearchResult], context: TvSearchContext
+    ) -> list[SearchResult]:
+        """Normalize results that confidently match a TV search context."""
+        return [
+            normalized
+            for result in results
+            if (normalized := release_matcher.match_tv(result, context)) is not None
+        ]
 
     def _split_trailing_episode(
         self, query: str

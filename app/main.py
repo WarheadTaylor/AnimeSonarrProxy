@@ -10,8 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.api import newznab, torznab
 from app.services.anime_db import anime_db
-from app.services.sonarr import sonarr_client
+from app.services.newznab import newznab_client
 from app.services.radarr import radarr_client
+from app.services.sonarr import sonarr_client
 
 # Configure logging
 logging.basicConfig(
@@ -66,10 +67,12 @@ async def lifespan(app: FastAPI):
     logger.info(f"Torznab API: http://{settings.HOST}:{settings.PORT}/api")
     logger.info(f"Newznab API: http://{settings.HOST}:{settings.PORT}/newznab")
 
-    yield
-
-    # Shutdown
-    logger.info("Shutting down AnimeSonarrProxy...")
+    await newznab_client.start()
+    try:
+        yield
+    finally:
+        await newznab_client.close()
+        logger.info("Shutting down AnimeSonarrProxy...")
 
 
 # Create FastAPI app
