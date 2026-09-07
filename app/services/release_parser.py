@@ -153,7 +153,11 @@ class ReleaseParser:
         ]
         numbers: list[int] = []
         for pattern, skip_year_metadata, skip_media_numbers in patterns:
-            for match in re.finditer(pattern, title, re.IGNORECASE):
+            for match in re.finditer(
+                pattern,
+                self._compact_episode_title(title) if skip_media_numbers else title,
+                re.IGNORECASE,
+            ):
                 number = int(match.group(1))
                 if (
                     skip_year_metadata
@@ -166,6 +170,18 @@ class ReleaseParser:
                 if number > 0 and number not in numbers:
                     numbers.append(number)
         return numbers
+
+    def _compact_episode_title(self, title: str) -> str:
+        """Restrict compact episode tokens to the title before media metadata."""
+        title = re.sub(r"^\[[^\]]+\]\s*", "", title)
+        return re.split(
+            r"[\[(]|\b(?:\d{3,4}[pi]|(?:19|20)\d{2}|AAC|FLAC|DDP?|DTS|"
+            r"AC3|EAC3|TrueHD|BluRay|BDRip|WEB[ .-]?DL|WEBRip|HDTV|"
+            r"[xh][ .-]?26[45]|HEVC|AVC)\b",
+            title,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
 
     def _is_media_number(self, number: int) -> bool:
         if number in {480, 540, 576, 720, 1080, 1440, 2160}:

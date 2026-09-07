@@ -8,7 +8,11 @@ from typing import Dict, List, Optional, Union
 from app.config import NewznabProviderSettings, settings
 from app.models import SearchResult
 from app.services.metadata import TvSearchContext, metadata_resolver
-from app.services.newznab import configured_newznab_providers, newznab_client
+from app.services.newznab import (
+    NewznabResults,
+    configured_newznab_providers,
+    newznab_client,
+)
 from app.services.release_matcher import release_matcher
 from app.services.release_parser import release_parser
 
@@ -81,7 +85,10 @@ class NewznabCoreService:
             )
         )
         return self._rank(
-            [result for batch in batches for result in batch], limit, providers
+            [result for batch in batches for result in batch],
+            limit,
+            providers,
+            total=sum(getattr(batch, "total", len(batch)) for batch in batches),
         )
 
     async def generic_search(
@@ -116,6 +123,7 @@ class NewznabCoreService:
                         ),
                     },
                     fallback_categories=self._categories(provider, categories),
+                    fetch_all=season is not None and episode is not None,
                 )
                 for provider in providers
             )
@@ -148,19 +156,14 @@ class NewznabCoreService:
                 providers,
             )
 
-        if series_title and absolute_episode is not None:
-            matched = [
-                normalized
-                for result in results
-                if (
-                    normalized := release_matcher.match_tv_absolute(
-                        result, series_title, absolute_episode
-                    )
-                )
-                is not None
-            ]
-            return self._rank(matched, limit, providers)
-        return self._rank(results, limit, providers)
+        return self._rank(
+            results,
+            limit,
+            providers,
+            total=sum(
+                getattr(batch, "total", len(batch)) for batch in provider_results
+            ),
+        )
 
     async def _search_tv_provider(
         self,
@@ -177,6 +180,7 @@ class NewznabCoreService:
             provider,
             params[0],
             fallback_categories=fallback_categories,
+            fetch_all=True,
         )
         primary_matches = self._match_tv_results(primary_results, context)
         if primary_matches:
@@ -190,6 +194,7 @@ class NewznabCoreService:
                     provider,
                     fallback_params,
                     fallback_categories=fallback_categories,
+                    fetch_all=True,
                 )
 
         fallback_results = await asyncio.gather(
@@ -317,6 +322,7 @@ class NewznabCoreService:
         results: list[SearchResult],
         limit: int,
         providers: list[NewznabProviderSettings],
+        total: Optional[int] = None,
     ) -> list[SearchResult]:
         priorities = {provider.id: provider.priority for provider in providers}
         unique: dict[str, SearchResult] = {}
@@ -330,7 +336,11 @@ class NewznabCoreService:
 
         ranked = list(unique.values())
         ranked.sort(key=lambda result: self._sort_key(result, priorities), reverse=True)
-        return ranked[: min(limit, settings.MAX_RESULTS_PER_QUERY)]
+        # The API applies the page limit after filtering and deduplication.
+        # Keep all matches here so offsets and the reported total stay valid.
+        if total is not None:
+            return NewznabResults(ranked, total - (len(results) - len(ranked)))
+        return ranked
 
     def _sort_key(
         self, result: SearchResult, priorities: dict[str, int]
@@ -340,9 +350,9 @@ class NewznabCoreService:
 
     def _dedupe_key(self, result: SearchResult) -> str:
         if result.provider_attrs.get("guid"):
-            return result.provider_attrs["guid"]
+            return f"{result.provider_id}:{result.provider_attrs['guid']}"
         if result.provider_guid:
-            return result.provider_guid
+            return f"{result.provider_id}:{result.provider_guid}"
         if result.guid:
             return result.guid
         normalized_title = re.sub(r"\s+", " ", result.title.casefold()).strip()

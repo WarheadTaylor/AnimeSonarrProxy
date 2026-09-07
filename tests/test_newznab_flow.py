@@ -144,7 +144,9 @@ async def test_newznab_tv_search_uses_concurrent_provider_fast_paths(monkeypatch
     max_active = 0
     calls = []
 
-    async def fake_search(provider, params, fallback_categories=None):
+    async def fake_search(
+        provider, params, fallback_categories=None, *, fetch_all=False
+    ):
         nonlocal active, max_active
         calls.append((provider.id, params["t"]))
         active += 1
@@ -182,7 +184,9 @@ async def test_newznab_tv_search_bounds_fallback_concurrency(monkeypatch):
     max_active = 0
     fallback_calls = 0
 
-    async def fake_search(provider, params, fallback_categories=None):
+    async def fake_search(
+        provider, params, fallback_categories=None, *, fetch_all=False
+    ):
         nonlocal active, max_active, fallback_calls
         if params["t"] == "tvsearch":
             return []
@@ -554,14 +558,14 @@ def test_absolute_matching_requires_absolute_numbering(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "query,expected_count", [("One Piece 01", 0), ("One Piece 02", 1), ("One Piece", 1)]
+    "query,expected_count", [("One Piece 01", 1), ("One Piece 02", 1), ("One Piece", 1)]
 )
-async def test_generic_search_preserves_empty_episode_matches(
+async def test_generic_search_without_episode_context_preserves_results(
     monkeypatch: pytest.MonkeyPatch,
     query: str,
     expected_count: int,
 ) -> None:
-    """Recognized episode queries remain filtered even when no release matches."""
+    """Title-only queries do not infer episode constraints from trailing numbers."""
     monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
     title = "[Group] One Piece - 02 (1080p)"
     result = make_usenet_result().model_copy(
@@ -719,3 +723,205 @@ def test_single_provider_api_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "NEWZNAB_API_PATH", "/api")
     monkeypatch.setattr(settings, "NEWZNAB_API_KEY", "upstream-secret")
     assert configured_newznab_providers()[0].api_url == "https://indexer.example/api"
+
+
+@pytest.mark.parametrize("audio", ["AAC-2.0", "FLAC-2.0", "DDP-5.1", "DTS-5.1"])
+def test_compact_episode_fallback_ignores_audio_metadata(
+    monkeypatch: pytest.MonkeyPatch, audio: str
+) -> None:
+    """Audio channels cannot become episode numbers when aniparse has no result."""
+    from app.services.release_parser import release_parser
+
+    monkeypatch.setattr("app.services.release_parser.aniparse.parse", lambda title: {})
+    for title in [f"Movie {audio}", f"[Group] Movie (2025) [1080p {audio}]"]:
+        assert release_parser.parse(title).episode_numbers == []
+    assert release_parser.parse(
+        f"[Group] OnePiece-1156.1080p.{audio}"
+    ).episode_numbers == [1156]
+
+
+@pytest.mark.parametrize("use_attrs", [True, False])
+def test_provider_guids_are_local(use_attrs: bool) -> None:
+    """Equal IDs across providers remain distinct; repeats within one do not."""
+    providers = [make_provider(id="first"), make_provider(id="second")]
+    first = make_provider_result("first", "123")
+    second = make_provider_result("second", "123")
+    if not use_attrs:
+        first.provider_attrs = {}
+        second.provider_attrs = {}
+    results = NewznabCoreService()._rank([first, first, second], 100, providers)
+    assert {result.provider_id for result in results} == {"first", "second"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["The 100", "Mob Psycho 100"])
+async def test_generic_numeric_series_titles(
+    monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    """A title-only search must not infer an episode from a numeric series name."""
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+    title = f"{query} S01E01 1080p"
+    result = make_usenet_result().model_copy(
+        update={"title": title, "original_title": title}
+    )
+
+    async def search(*args: object, **kwargs: object) -> List[SearchResult]:
+        return [result]
+
+    monkeypatch.setattr("app.services.newznab_core.newznab_client.search", search)
+    assert await NewznabCoreService().generic_search(query, 100) == [result]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", ["search", "tvsearch", "movie"])
+async def test_newznab_pages_preserve_all_results(
+    monkeypatch: pytest.MonkeyPatch, query_type: str
+) -> None:
+    """Local pagination includes later upstream pages and the complete merged total."""
+    monkeypatch.setattr(settings, "API_KEY", "local-secret")
+    monkeypatch.setattr(settings, "MAX_RESULTS_PER_QUERY", 100)
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+    offsets = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset", "0"))
+        offsets.append(offset)
+        # The upstream limits pages to 75 even when the proxy requests 100.
+        items = "".join(
+            f"<item><title>Release {number}</title><guid>{number}</guid>"
+            "<pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate></item>"
+            for number in range(offset, min(offset + 75, 230))
+        )
+        return httpx.Response(
+            200,
+            text=f'<rss xmlns:newznab="{NEWZNAB_NS}"><channel>'
+            f'<newznab:response offset="{offset}" total="230"/>{items}</channel></rss>',
+        )
+
+    app = FastAPI()
+    app.include_router(newznab_module.router)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as upstream:
+        monkeypatch.setattr(newznab_module.newznab_client, "_client", upstream)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.local"
+        ) as client:
+            pages = []
+            for offset, count in [(0, 100), (100, 100), (200, 30), (300, 0)]:
+                response = await client.get(
+                    "/newznab",
+                    params={
+                        "t": query_type,
+                        "apikey": "local-secret",
+                        "limit": 100,
+                        "offset": offset,
+                    },
+                )
+                assert response.status_code == 200
+                root = ET.fromstring(response.text)
+                metadata = root.find(f".//{{{NEWZNAB_NS}}}response")
+                assert metadata.attrib == {"offset": str(offset), "total": "230"}
+                ids = [item.findtext("guid") for item in root.findall(".//item")]
+                assert len(ids) == count
+                pages.extend(ids)
+    assert len(set(pages)) == 230
+    assert offsets == [0, 75] + [0, 75, 150] + [0, 75, 150, 225] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("episode,expected", [(1, 0), (2, 1)])
+async def test_generic_explicit_episode_still_filters(
+    monkeypatch: pytest.MonkeyPatch, episode: int, expected: int
+) -> None:
+    """Explicit season and episode constraints still reject mismatched releases."""
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+    title = "One Piece S01E02 1080p"
+    result = make_usenet_result().model_copy(
+        update={"title": title, "original_title": title}
+    )
+
+    async def search(*args: object, **kwargs: object) -> List[SearchResult]:
+        assert kwargs["fetch_all"] is True
+        return [result]
+
+    monkeypatch.setattr("app.services.newznab_core.newznab_client.search", search)
+    results = await NewznabCoreService().generic_search(
+        "One Piece", 100, season=1, episode=episode
+    )
+    assert len(results) == expected
+
+
+@pytest.mark.asyncio
+async def test_client_stops_when_provider_ignores_offset() -> None:
+    """An upstream that repeats a page cannot cause an endless fetch loop."""
+    calls = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            text=f'<rss xmlns:newznab="{NEWZNAB_NS}"><channel>'
+            '<newznab:response offset="0" total="1000"/>'
+            "<item><title>Release</title><guid>123</guid></item></channel></rss>",
+        )
+
+    client = NewznabClient()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        results = await client.search(
+            make_provider(), {"t": "search", "limit": 100}, fetch_all=True
+        )
+    finally:
+        await client.close()
+    assert len(results) == 1
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_filtered_pagination_counts_only_matching_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filtering scans later pages and reports the matching total before slicing."""
+    monkeypatch.setattr(settings, "API_KEY", "local-secret")
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+    offsets = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset", "0"))
+        offsets.append(offset)
+        items = "".join(
+            f"<item><title>One Piece S01E{1 if number % 2 else 2:02} 1080p</title>"
+            f"<guid>{number}</guid><pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate></item>"
+            for number in range(offset, min(offset + 100, 230))
+        )
+        return httpx.Response(
+            200,
+            text=f'<rss xmlns:newznab="{NEWZNAB_NS}"><channel>'
+            f'<newznab:response offset="{offset}" total="230"/>{items}</channel></rss>',
+        )
+
+    app = FastAPI()
+    app.include_router(newznab_module.router)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as upstream:
+        monkeypatch.setattr(newznab_module.newznab_client, "_client", upstream)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.local"
+        ) as client:
+            response = await client.get(
+                "/newznab",
+                params={
+                    "t": "search",
+                    "q": "One Piece",
+                    "season": 1,
+                    "ep": 1,
+                    "apikey": "local-secret",
+                    "offset": 100,
+                    "limit": 100,
+                },
+            )
+    root = ET.fromstring(response.text)
+    assert len(root.findall(".//item")) == 15
+    assert root.find(f".//{{{NEWZNAB_NS}}}response").attrib == {
+        "offset": "100",
+        "total": "115",
+    }
+    assert offsets == [0, 100, 200]

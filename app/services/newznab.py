@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
@@ -16,6 +16,14 @@ from app.models import SearchResult
 logger = logging.getLogger(__name__)
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
+
+
+class NewznabResults(List[SearchResult]):
+    """Fetched results with the upstream total for an unfiltered search."""
+
+    def __init__(self, results: List[SearchResult], total: int) -> None:
+        super().__init__(results)
+        self.total = total
 
 
 class ApiKeyLogFilter(logging.Filter):
@@ -93,31 +101,69 @@ class NewznabClient:
         provider: NewznabProviderSettings,
         params: dict[str, Any],
         fallback_categories: Optional[list[int]] = None,
+        *,
+        fetch_all: bool = False,
     ) -> list[SearchResult]:
-        """Search one upstream provider and parse Newznab RSS results."""
-        request_params = self._request_params(provider, params)
-        try:
-            client = await self._get_client()
-            response = await client.get(
-                provider.api_url,
-                params=request_params,
-                timeout=provider.timeout,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "Newznab provider %s search failed: %s status=%s",
-                provider.id,
-                type(exc).__name__,
-                (
-                    exc.response.status_code
-                    if isinstance(exc, httpx.HTTPStatusError)
-                    else None
-                ),
-            )
-            return []
+        """Fetch the requested prefix, or all pages needed for local matching.
 
-        return self.parse_rss(provider, response.text, fallback_categories)
+        Preserve the provider total when its feed includes pagination metadata.
+        """
+        request_params = self._request_params(provider, params)
+        target = max(0, int(params.get("limit", 100)))
+        page_size = max(
+            1, min(int(params.get("limit", 100)), settings.MAX_RESULTS_PER_QUERY)
+        )
+        request_params["limit"] = str(page_size)
+        offset = int(params.get("offset", 0))
+        results: list[SearchResult] = []
+        seen: set[str] = set()
+        while True:
+            try:
+                client = await self._get_client()
+                response = await client.get(
+                    provider.api_url,
+                    params=request_params,
+                    timeout=provider.timeout,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "Newznab provider %s search failed: %s status=%s",
+                    provider.id,
+                    type(exc).__name__,
+                    (
+                        exc.response.status_code
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else None
+                    ),
+                )
+                return results
+
+            batch = self.parse_rss(provider, response.text, fallback_categories)
+            fresh = [result for result in batch if result.guid not in seen]
+            results.extend(fresh)
+            seen.update(result.guid for result in batch)
+            try:
+                root = ET.fromstring(response.text)
+            except ET.ParseError:
+                return results
+            count = len(root.findall(".//item"))
+            pagination = root.find(f".//{{{NEWZNAB_NS}}}response")
+            offset += count
+            # Stop if a provider ignores offsets, or if the feed is exhausted.
+            if not count or (batch and not fresh):
+                return results
+            if pagination is not None:
+                total = self._safe_int(pagination.get("total", "0"))
+                if total and offset >= total:
+                    return results
+                if total and not fetch_all and len(results) >= target:
+                    return NewznabResults(results, total)
+                if not total and count < page_size:
+                    return results
+            elif count < page_size:
+                return results
+            request_params["offset"] = str(offset)
 
     async def get_nzb(
         self, provider: NewznabProviderSettings, provider_guid: str

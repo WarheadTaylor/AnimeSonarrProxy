@@ -9,8 +9,11 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from app.api.torznab import parse_categories
 from app.config import settings
 from app.models import SearchResult
-from app.services.newznab import configured_newznab_providers, get_newznab_provider
-from app.services.newznab import newznab_client
+from app.services.newznab import (
+    configured_newznab_providers,
+    get_newznab_provider,
+    newznab_client,
+)
 from app.services.newznab_core import newznab_core_service
 from app.services.newznab_renderer import newznab_renderer
 
@@ -207,7 +210,7 @@ def render_results(
         content=newznab_renderer.render(
             paged,
             offset=offset,
-            total=len(results),
+            total=getattr(results, "total", len(results)),
             request_base_url=str(request.base_url),
         ),
         media_type="application/xml",
