@@ -1,9 +1,11 @@
 # AnimeSonarrProxy
 
-AnimeSonarrProxy is a FastAPI Torznab proxy for anime automation. It accepts
-Sonarr and Radarr Torznab requests, resolves the requested media to anime-friendly
-titles, searches Nyaa RSS directly, parses Nyaa release titles, filters uncertain
-matches, and returns manager-friendly release titles.
+AnimeSonarrProxy is a FastAPI proxy for anime automation. It accepts Sonarr and
+Radarr Torznab requests, resolves the requested media to anime-friendly titles,
+searches Nyaa RSS directly, parses release titles, filters uncertain matches,
+and returns manager-friendly release titles. It can also expose a separate
+Newznab endpoint for Sonarr that searches configurable upstream Newznab providers
+such as NZBGeek.
 
 ## Core Flow
 
@@ -14,6 +16,14 @@ Sonarr/Radarr -> /api Torznab request
               -> anime release parser
               -> confident match filter
               -> normalized Torznab RSS
+
+Sonarr        -> /newznab Newznab request
+              -> metadata resolver
+              -> upstream Newznab provider search
+              -> anime release parser
+              -> confident match filter
+              -> normalized Newznab RSS
+              -> proxied upstream NZB download
 ```
 
 The returned RSS title is intentionally not always the original Nyaa title. The
@@ -29,7 +39,7 @@ Suzume (2022) [1080p][BDRip] -Group
 
 ## Supported API
 
-All endpoints are served from `GET /api`.
+Torznab endpoints are served from `GET /api`.
 
 | Query | Purpose |
 | --- | --- |
@@ -41,6 +51,18 @@ All endpoints are served from `GET /api`.
 | `t=search&q=` | Guarded generic/manual search and indexer tests. |
 
 Searches other than `caps` require `apikey`.
+
+Newznab endpoints are served from `GET /newznab`.
+
+| Query | Purpose |
+| --- | --- |
+| `t=caps` | Newznab capabilities. |
+| `t=tvsearch&tvdbid=&season=&ep=` | Sonarr episode search through upstream Newznab providers. |
+| `t=search&q=` | Generic/manual upstream Newznab search and indexer tests. |
+| `t=get&provider=&id=` | Proxied NZB download from the selected upstream provider. |
+
+Newznab searches and downloads require the local `apikey`. Upstream provider API
+keys are configured server-side and are not returned to Sonarr in RSS links.
 
 ## Metadata Sources
 
@@ -92,6 +114,15 @@ Optional:
 | --- | --- |
 | `HOST` | `0.0.0.0` |
 | `PORT` | `8000` |
+| `NEWZNAB_URL` / `NEWZNAB_API_KEY` | unset |
+| `NEWZNAB_API_PATH` | unset; use `NEWZNAB_URL` as the complete endpoint |
+| `NEWZNAB_ID` | `newznab` |
+| `NEWZNAB_NAME` | `Newznab` |
+| `NEWZNAB_CATEGORIES` | `5070` |
+| `NEWZNAB_PROVIDERS` | unset |
+| `NEWZNAB_MAX_QUERY_VARIANTS` | `8` |
+| `NEWZNAB_DEFAULT_CATEGORIES` | `5070` |
+| `PUBLIC_BASE_URL` | unset |
 | `SONARR_URL` / `SONARR_API_KEY` | unset |
 | `RADARR_URL` / `RADARR_API_KEY` | unset |
 | `DATA_DIR` | `/app/data` |
@@ -111,6 +142,61 @@ Add a custom Torznab indexer:
 - Categories: `5070`
 
 For best episode matching, configure `SONARR_URL` and `SONARR_API_KEY`.
+
+## Sonarr Newznab Setup
+
+Add a custom Newznab indexer:
+
+- URL: `http://your-server-ip:8000`
+- API path: `/newznab`
+- API key: `API_KEY`
+- Anime categories: `5070`
+
+Keep `/newznab` in the API path field, not in both the URL and API path.
+The API key here is the proxy's key, not an upstream provider's key.
+
+Configure one upstream Newznab provider with simple env vars:
+
+```env
+NEWZNAB_URL=https://api.nzbgeek.info
+NEWZNAB_API_KEY=your_nzbgeek_api_key
+NEWZNAB_ID=nzbgeek
+NEWZNAB_NAME=NZBGeek
+NEWZNAB_CATEGORIES=5070
+```
+
+Or configure multiple providers with `NEWZNAB_PROVIDERS`:
+
+```env
+NEWZNAB_PROVIDERS=[{"id":"nzbgeek","name":"NZBGeek","url":"https://api.nzbgeek.info","api_key":"your_nzbgeek_api_key","enabled":true,"categories":[5070],"priority":100,"timeout":30.0}]
+```
+
+`/api` remains Torznab/Nyaa only. `/newznab` is the upstream Newznab provider
+proxy and uses `t=get` to proxy NZB downloads without exposing provider API keys.
+
+`NEWZNAB_URL` must be the provider's complete API endpoint. For providers that
+use `/api`, set `NEWZNAB_URL=https://indexer.example/api`, or use
+`NEWZNAB_URL=https://indexer.example` with `NEWZNAB_API_PATH=/api`.
+For multiple providers, the equivalent optional field is `"api_path":"/api"`.
+Specify the path only once. Leave it unset for APIs served at the host root,
+such as the NZBGeek example above. URLs must use HTTP(S); configure keys separately.
+
+The Newznab proxy forwards anime ID/absolute-number searches, season searches,
+title searches, daily air dates, and RSS requests with their search parameters.
+Resolved TVDB season/episode searches retain anime title and episode mapping.
+When local metadata is missing, the upstream provider can still resolve the ID.
+
+### Radarr Newznab setup
+
+Add a custom **Newznab** indexer with URL `http://your-server-ip:8000`, API path
+`/newznab`, the proxy's `API_KEY`, and movie category `2000` or the desired movie
+subcategories. Category `2060` is Movies/3D, not a general anime movie category.
+Movie ID, title/year, and RSS requests are forwarded to the upstream providers.
+The providers must support the requested Newznab search types and identifiers.
+Radarr metadata integration is not required for these forwarded searches.
+
+If downloads need a different reachable address, set `PUBLIC_BASE_URL` to the
+proxy's base URL, without `/newznab`. Generated NZB links use that address.
 
 ## Radarr Setup
 

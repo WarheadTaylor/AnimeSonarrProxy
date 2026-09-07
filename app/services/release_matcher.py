@@ -9,12 +9,12 @@ from app.services.release_parser import ParsedRelease, release_parser
 
 
 class ReleaseMatcher:
-    """Filters Nyaa results to confident Sonarr/Radarr matches."""
+    """Filters release results to confident Sonarr/Radarr matches."""
 
     def match_tv(
         self, result: SearchResult, context: TvSearchContext
     ) -> Optional[SearchResult]:
-        """Return a normalized TV result when the Nyaa title confidently matches."""
+        """Return a normalized TV result when the release title confidently matches."""
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None
@@ -38,10 +38,31 @@ class ReleaseMatcher:
             }
         )
 
+    def match_tv_absolute(
+        self, result: SearchResult, series_title: str, absolute_episode: int
+    ) -> Optional[SearchResult]:
+        """Return a normalized TV result matched on absolute numbering alone."""
+        parsed = release_parser.parse(result.original_title or result.title)
+        # Seasonal episode numbers need a mapping supplied through match_tv.
+        if parsed.is_batch or parsed.season_numbers:
+            return None
+        if not self._matched_title(parsed, [series_title]):
+            return None
+        if absolute_episode not in parsed.episode_numbers:
+            return None
+        return result.model_copy(
+            update={
+                "title": self._absolute_tv_title(
+                    parsed, series_title, absolute_episode
+                ),
+                "original_title": result.original_title or result.title,
+            }
+        )
+
     def match_movie(
         self, result: SearchResult, context: MovieSearchContext
     ) -> Optional[SearchResult]:
-        """Return a normalized movie result when the Nyaa title confidently matches."""
+        """Return a normalized movie result when the release title confidently matches."""
         parsed = release_parser.parse(result.original_title or result.title)
         if parsed.is_batch:
             return None
@@ -70,11 +91,18 @@ class ReleaseMatcher:
             )
             if haystack
         ]
+        compact_haystacks = [haystack.replace(" ", "") for haystack in haystacks]
         for title in search_titles:
             needle = self._normalize_title(title)
             if not needle:
                 continue
             if any(needle in haystack or haystack in needle for haystack in haystacks):
+                return title
+            compact_needle = needle.replace(" ", "")
+            if len(compact_needle) >= 5 and any(
+                compact_needle in haystack or haystack in compact_needle
+                for haystack in compact_haystacks
+            ):
                 return title
         return None
 
@@ -140,6 +168,15 @@ class ReleaseMatcher:
         metadata = self._metadata(parsed)
         if metadata and context.absolute_episode is None:
             return f"{title} - {metadata}".strip()
+        return f"{title} {metadata}".strip()
+
+    def _absolute_tv_title(
+        self, parsed: ParsedRelease, series_title: str, absolute_episode: int
+    ) -> str:
+        group = f"[{parsed.release_group}] " if parsed.release_group else ""
+        version = parsed.release_version or ""
+        title = f"{group}{series_title} - {absolute_episode:02d}{version}"
+        metadata = self._metadata(parsed)
         return f"{title} {metadata}".strip()
 
     def _movie_title(self, parsed: ParsedRelease, context: MovieSearchContext) -> str:

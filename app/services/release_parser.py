@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedRelease:
-    """Parsed metadata extracted from a Nyaa release title."""
+    """Parsed metadata extracted from an anime release title."""
 
     original_title: str
     release_group: Optional[str] = None
@@ -37,10 +37,10 @@ class ParsedRelease:
 
 
 class ReleaseParser:
-    """Parses Nyaa release titles into the subset of metadata used by the proxy."""
+    """Parses anime release titles into the subset of metadata used by the proxy."""
 
     def parse(self, title: str) -> ParsedRelease:
-        """Parse a Nyaa release title."""
+        """Parse an anime release title."""
         try:
             parsed = aniparse.parse(title) or {}
         except Exception as exc:
@@ -146,13 +146,18 @@ class ReleaseParser:
         self, title: str, release_year: Optional[int] = None
     ) -> list[int]:
         patterns = [
-            (r"\bS0*\d{1,2}E0*(\d{1,3})(?:v\d+)?\b", False),
-            (r"(?<![A-Za-z0-9])EP\s*0*(\d{1,5})(?:v\d+)?(?![A-Za-z0-9])", False),
-            (r"(?<![A-Za-z0-9])-?\s0*(\d{1,5})(?:v\d+)?(?:\s|\[|\(|$)", True),
+            (r"\bS0*\d{1,2}E0*(\d{1,3})(?:v\d+)?\b", False, False),
+            (r"(?<![A-Za-z0-9])EP\s*0*(\d{1,5})(?:v\d+)?(?![A-Za-z0-9])", False, False),
+            (r"(?<![A-Za-z0-9])-?\s0*(\d{1,5})(?:v\d+)?(?:\s|\[|\(|$)", True, False),
+            (r"(?<=[A-Za-z])-0*(\d{1,4})(?:v\d+)?(?=[-.\s\[\]()]|$)", False, True),
         ]
         numbers: list[int] = []
-        for pattern, skip_year_metadata in patterns:
-            for match in re.finditer(pattern, title, re.IGNORECASE):
+        for pattern, skip_year_metadata, skip_media_numbers in patterns:
+            for match in re.finditer(
+                pattern,
+                self._compact_episode_title(title) if skip_media_numbers else title,
+                re.IGNORECASE,
+            ):
                 number = int(match.group(1))
                 if (
                     skip_year_metadata
@@ -160,9 +165,28 @@ class ReleaseParser:
                     and self._is_dash_delimited_year_metadata(title, match)
                 ):
                     continue
+                if skip_media_numbers and self._is_media_number(number):
+                    continue
                 if number > 0 and number not in numbers:
                     numbers.append(number)
         return numbers
+
+    def _compact_episode_title(self, title: str) -> str:
+        """Restrict compact episode tokens to the title before media metadata."""
+        title = re.sub(r"^\[[^\]]+\]\s*", "", title)
+        return re.split(
+            r"[\[(]|\b(?:\d{3,4}[pi]|(?:19|20)\d{2}|AAC|FLAC|DDP?|DTS|"
+            r"AC3|EAC3|TrueHD|BluRay|BDRip|WEB[ .-]?DL|WEBRip|HDTV|"
+            r"[xh][ .-]?26[45]|HEVC|AVC)\b",
+            title,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+
+    def _is_media_number(self, number: int) -> bool:
+        if number in {480, 540, 576, 720, 1080, 1440, 2160}:
+            return True
+        return 1900 <= number <= 2099
 
     def _is_dash_delimited_year_metadata(
         self, title: str, match: re.Match[str]

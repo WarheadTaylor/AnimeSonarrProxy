@@ -1,0 +1,334 @@
+"""Newznab upstream provider client and RSS parsing."""
+
+import logging
+import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, List, Optional
+from urllib.parse import parse_qs, urlsplit
+from xml.etree import ElementTree as ET
+
+import httpx
+
+from app.config import NewznabProviderSettings, settings
+from app.models import SearchResult
+
+logger = logging.getLogger(__name__)
+
+NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
+
+
+class NewznabResults(List[SearchResult]):
+    """Fetched results with the upstream total for an unfiltered search."""
+
+    def __init__(self, results: List[SearchResult], total: int) -> None:
+        super().__init__(results)
+        self.total = total
+
+
+class ApiKeyLogFilter(logging.Filter):
+    """Redact API key query values from HTTP client's request diagnostics."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Sanitize a formatted log record before handlers receive it."""
+        record.msg = re.sub(
+            r"(?i)([?&](?:apikey|api_key)=)[^&\s\"'<>]+",
+            r"\1[REDACTED]",
+            record.getMessage(),
+        )
+        record.args = ()
+        return True
+
+
+for _logger_name in (
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+):
+    logging.getLogger(_logger_name).addFilter(ApiKeyLogFilter())
+
+
+def configured_newznab_providers() -> list[NewznabProviderSettings]:
+    """Return enabled upstream Newznab providers from settings."""
+    providers = list(settings.NEWZNAB_PROVIDERS)
+    if not providers and settings.NEWZNAB_URL and settings.NEWZNAB_API_KEY:
+        providers = [
+            NewznabProviderSettings(
+                id=settings.NEWZNAB_ID,
+                name=settings.NEWZNAB_NAME,
+                url=settings.NEWZNAB_URL,
+                api_path=settings.NEWZNAB_API_PATH,
+                api_key=settings.NEWZNAB_API_KEY,
+                categories=settings.NEWZNAB_CATEGORIES,
+            )
+        ]
+    return [
+        provider
+        for provider in providers
+        if provider.enabled and provider.url and provider.api_key
+    ]
+
+
+def get_newznab_provider(provider_id: str) -> Optional[NewznabProviderSettings]:
+    """Return one enabled provider by ID."""
+    for provider in configured_newznab_providers():
+        if provider.id == provider_id:
+            return provider
+    return None
+
+
+class NewznabClient:
+    """Client for Newznab-compatible upstream providers."""
+
+    def __init__(self) -> None:
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def start(self) -> None:
+        """Create the shared HTTP client used for upstream requests."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+
+    async def close(self) -> None:
+        """Close the shared upstream HTTP client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    async def search(
+        self,
+        provider: NewznabProviderSettings,
+        params: dict[str, Any],
+        fallback_categories: Optional[list[int]] = None,
+        *,
+        fetch_all: bool = False,
+    ) -> list[SearchResult]:
+        """Fetch the requested prefix, or all pages needed for local matching.
+
+        Preserve the provider total when its feed includes pagination metadata.
+        """
+        request_params = self._request_params(provider, params)
+        target = max(0, int(params.get("limit", 100)))
+        page_size = max(
+            1, min(int(params.get("limit", 100)), settings.MAX_RESULTS_PER_QUERY)
+        )
+        request_params["limit"] = str(page_size)
+        offset = int(params.get("offset", 0))
+        results: list[SearchResult] = []
+        seen: set[str] = set()
+        while True:
+            try:
+                client = await self._get_client()
+                response = await client.get(
+                    provider.api_url,
+                    params=request_params,
+                    timeout=provider.timeout,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "Newznab provider %s search failed: %s status=%s",
+                    provider.id,
+                    type(exc).__name__,
+                    (
+                        exc.response.status_code
+                        if isinstance(exc, httpx.HTTPStatusError)
+                        else None
+                    ),
+                )
+                return results
+
+            batch = self.parse_rss(provider, response.text, fallback_categories)
+            fresh = [result for result in batch if result.guid not in seen]
+            results.extend(fresh)
+            seen.update(result.guid for result in batch)
+            try:
+                root = ET.fromstring(response.text)
+            except ET.ParseError:
+                return results
+            count = len(root.findall(".//item"))
+            pagination = root.find(f".//{{{NEWZNAB_NS}}}response")
+            offset += count
+            # Stop if a provider ignores offsets, or if the feed is exhausted.
+            if not count or (batch and not fresh):
+                return results
+            if pagination is not None:
+                total = self._safe_int(pagination.get("total", "0"))
+                if total and offset >= total:
+                    return results
+                if total and not fetch_all and len(results) >= target:
+                    return NewznabResults(results, total)
+                if not total and count < page_size:
+                    return results
+            elif count < page_size:
+                return results
+            request_params["offset"] = str(offset)
+
+    async def get_nzb(
+        self, provider: NewznabProviderSettings, provider_guid: str
+    ) -> httpx.Response:
+        """Fetch one NZB from an upstream provider."""
+        client = await self._get_client()
+        response = await client.get(
+            provider.api_url,
+            params={
+                "t": "get",
+                "apikey": provider.api_key,
+                "id": provider_guid,
+            },
+            timeout=provider.timeout,
+        )
+        response.raise_for_status()
+        return response
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared client, initializing it for direct service use."""
+        await self.start()
+        assert self._client is not None
+        return self._client
+
+    def parse_rss(
+        self,
+        provider: NewznabProviderSettings,
+        xml: str,
+        fallback_categories: Optional[list[int]] = None,
+    ) -> list[SearchResult]:
+        """Parse a Newznab RSS response into normalized search results."""
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            logger.warning(
+                "Newznab provider %s returned invalid XML: %s", provider.id, exc
+            )
+            return []
+
+        results: list[SearchResult] = []
+        for item in root.findall(".//item"):
+            result = self._parse_item(provider, item, fallback_categories)
+            if result:
+                results.append(result)
+        return results
+
+    def _request_params(
+        self, provider: NewznabProviderSettings, params: dict[str, Any]
+    ) -> dict[str, str]:
+        request_params: dict[str, str] = {"apikey": provider.api_key}
+        for key, value in params.items():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                request_params[key] = ",".join(str(item) for item in value)
+            else:
+                request_params[key] = str(value)
+        return request_params
+
+    def _parse_item(
+        self,
+        provider: NewznabProviderSettings,
+        item: ET.Element,
+        fallback_categories: Optional[list[int]],
+    ) -> Optional[SearchResult]:
+        title = item.findtext("title", "").strip()
+        guid = item.findtext("guid", "").strip()
+        link = item.findtext("link", "").strip()
+        if not title or not (guid or link):
+            return None
+
+        attrs = self._newznab_attrs(item)
+        provider_guid = attrs.get("guid") or guid or link
+        # URL GUIDs/download links must never become credential-bearing local IDs.
+        if provider_guid.lower().startswith(("http://", "https://")):
+            try:
+                url = urlsplit(provider_guid)
+                query = parse_qs(url.query)
+                provider_guid = (query.get("id") or query.get("guid") or [""])[0]
+            except ValueError:
+                return None
+            if not provider_guid:
+                return None
+        attrs["guid"] = provider_guid
+        categories = self._categories(attrs, fallback_categories or provider.categories)
+        size = self._size(attrs, item)
+        pub_date = self._parse_date(item.findtext("pubDate", ""))
+
+        return SearchResult(
+            title=title,
+            original_title=title,
+            guid=f"{provider.id}:{provider_guid}",
+            link=link or guid,
+            info_url=item.findtext("comments", "") or link or guid,
+            pub_date=pub_date,
+            size=size,
+            seeders=self._int_attr(attrs, "seeders"),
+            peers=self._int_attr(attrs, "peers"),
+            indexer=provider.name,
+            categories=categories,
+            protocol="usenet",
+            provider_id=provider.id,
+            provider_guid=provider_guid,
+            provider_attrs=attrs,
+        )
+
+    def _newznab_attrs(self, item: ET.Element) -> dict[str, str]:
+        attrs: dict[str, str] = {}
+        for element in item.iter():
+            if not element.tag.endswith("attr"):
+                continue
+            name = element.attrib.get("name")
+            value = element.attrib.get("value")
+            if name and value is not None:
+                if name in attrs and attrs[name] != value:
+                    attrs[name] = f"{attrs[name]},{value}"
+                else:
+                    attrs[name] = value
+        return attrs
+
+    def _categories(
+        self, attrs: dict[str, str], fallback_categories: list[int]
+    ) -> list[int]:
+        categories: list[int] = []
+        for raw_category in attrs.get("category", "").split(","):
+            raw_category = raw_category.strip()
+            if not raw_category:
+                continue
+            try:
+                category = int(raw_category)
+            except ValueError:
+                continue
+            if category not in categories:
+                categories.append(category)
+        return categories or list(fallback_categories)
+
+    def _size(self, attrs: dict[str, str], item: ET.Element) -> int:
+        raw_size = attrs.get("size")
+        if raw_size:
+            return self._safe_int(raw_size)
+
+        enclosure = item.find("enclosure")
+        if enclosure is not None:
+            return self._safe_int(enclosure.attrib.get("length", "0"))
+        return 0
+
+    def _int_attr(self, attrs: dict[str, str], name: str) -> int:
+        return self._safe_int(attrs.get(name, "0"))
+
+    def _safe_int(self, value: str) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def _parse_date(self, value: str) -> datetime:
+        if not value:
+            return datetime.now(timezone.utc)
+        try:
+            parsed = parsedate_to_datetime(value)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return datetime.now(timezone.utc)
+
+
+newznab_client = NewznabClient()
