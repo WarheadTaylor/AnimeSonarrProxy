@@ -115,6 +115,7 @@ Optional:
 | `HOST` | `0.0.0.0` |
 | `PORT` | `8000` |
 | `NEWZNAB_URL` / `NEWZNAB_API_KEY` | unset |
+| `NEWZNAB_API_PATH` | unset; use `NEWZNAB_URL` as the complete endpoint |
 | `NEWZNAB_ID` | `newznab` |
 | `NEWZNAB_NAME` | `Newznab` |
 | `NEWZNAB_CATEGORIES` | `5070` |
@@ -149,7 +150,10 @@ Add a custom Newznab indexer:
 - URL: `http://your-server-ip:8000`
 - API path: `/newznab`
 - API key: `API_KEY`
-- Categories: `5070`
+- Anime categories: `5070`
+
+Keep `/newznab` in the API path field, not in both the URL and API path.
+The API key here is the proxy's key, not an upstream provider's key.
 
 Configure one upstream Newznab provider with simple env vars:
 
@@ -169,6 +173,30 @@ NEWZNAB_PROVIDERS=[{"id":"nzbgeek","name":"NZBGeek","url":"https://api.nzbgeek.i
 
 `/api` remains Torznab/Nyaa only. `/newznab` is the upstream Newznab provider
 proxy and uses `t=get` to proxy NZB downloads without exposing provider API keys.
+
+`NEWZNAB_URL` must be the provider's complete API endpoint. For providers that
+use `/api`, set `NEWZNAB_URL=https://indexer.example/api`, or use
+`NEWZNAB_URL=https://indexer.example` with `NEWZNAB_API_PATH=/api`.
+For multiple providers, the equivalent optional field is `"api_path":"/api"`.
+Specify the path only once. Leave it unset for APIs served at the host root,
+such as the NZBGeek example above. URLs must use HTTP(S); configure keys separately.
+
+The Newznab proxy forwards anime ID/absolute-number searches, season searches,
+title searches, daily air dates, and RSS requests with their search parameters.
+Resolved TVDB season/episode searches retain anime title and episode mapping.
+When local metadata is missing, the upstream provider can still resolve the ID.
+
+### Radarr Newznab setup
+
+Add a custom **Newznab** indexer with URL `http://your-server-ip:8000`, API path
+`/newznab`, the proxy's `API_KEY`, and movie category `2000` or the desired movie
+subcategories. Category `2060` is Movies/3D, not a general anime movie category.
+Movie ID, title/year, and RSS requests are forwarded to the upstream providers.
+The providers must support the requested Newznab search types and identifiers.
+Radarr metadata integration is not required for these forwarded searches.
+
+If downloads need a different reachable address, set `PUBLIC_BASE_URL` to the
+proxy's base URL, without `/newznab`. Generated NZB links use that address.
 
 ## Radarr Setup
 

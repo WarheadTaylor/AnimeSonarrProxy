@@ -51,6 +51,7 @@ def configured_newznab_providers() -> list[NewznabProviderSettings]:
                 id=settings.NEWZNAB_ID,
                 name=settings.NEWZNAB_NAME,
                 url=settings.NEWZNAB_URL,
+                api_path=settings.NEWZNAB_API_PATH,
                 api_key=settings.NEWZNAB_API_KEY,
                 categories=settings.NEWZNAB_CATEGORIES,
             )
@@ -98,7 +99,7 @@ class NewznabClient:
         try:
             client = await self._get_client()
             response = await client.get(
-                provider.url.rstrip("/"),
+                provider.api_url,
                 params=request_params,
                 timeout=provider.timeout,
             )
@@ -124,7 +125,7 @@ class NewznabClient:
         """Fetch one NZB from an upstream provider."""
         client = await self._get_client()
         response = await client.get(
-            provider.url.rstrip("/"),
+            provider.api_url,
             params={
                 "t": "get",
                 "apikey": provider.api_key,

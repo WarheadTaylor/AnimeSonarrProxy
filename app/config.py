@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from typing import Annotated, Any, List, Optional
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -14,11 +15,51 @@ class NewznabProviderSettings(BaseModel):
     id: str
     name: str
     url: str
+    api_path: Optional[str] = None
     api_key: str
     enabled: bool = True
     categories: List[int] = Field(default_factory=lambda: [5070])
     priority: int = 100
     timeout: float = 30.0
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        """Require an HTTP API URL without embedded credentials or query fields."""
+        value = value.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Use an HTTP(S) API URL; put the API key in api_key")
+        return value
+
+    @field_validator("api_path")
+    @classmethod
+    def validate_api_path(cls, value: Optional[str]) -> Optional[str]:
+        """Allow an explicit API path relative to the provider base URL."""
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if (
+            not value.startswith("/")
+            or value.startswith("//")
+            or any(char in value for char in "?#")
+        ):
+            raise ValueError("API path must start with / and have no query or fragment")
+        return value.rstrip("/")
+
+    @property
+    def api_url(self) -> str:
+        """Return the full endpoint, preserving providers that serve their API at /."""
+        return self.url.rstrip("/") + (self.api_path or "")
 
 
 class Settings(BaseSettings):
@@ -37,6 +78,7 @@ class Settings(BaseSettings):
     # Newznab Settings (optional - for upstream Usenet providers)
     NEWZNAB_PROVIDERS: List[NewznabProviderSettings] = Field(default_factory=list)
     NEWZNAB_URL: Optional[str] = None
+    NEWZNAB_API_PATH: Optional[str] = None
     NEWZNAB_API_KEY: Optional[str] = None
     NEWZNAB_ID: str = "newznab"
     NEWZNAB_NAME: str = "Newznab"

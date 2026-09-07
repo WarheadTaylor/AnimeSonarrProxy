@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import re
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 from app.config import NewznabProviderSettings, settings
 from app.models import SearchResult
@@ -31,7 +31,11 @@ class NewznabCoreService:
         """Search Newznab providers for a Sonarr TV request."""
         context = await metadata_resolver.resolve_tv(tvdb_id, season, episode)
         if context is None:
-            return []
+            return await self.structured_search(
+                {"t": "tvsearch", "tvdbid": tvdb_id, "season": season, "ep": episode},
+                limit,
+                categories,
+            )
 
         providers = configured_newznab_providers()
         fallback_semaphore = asyncio.Semaphore(NEWZNAB_FALLBACK_CONCURRENCY)
@@ -50,22 +54,67 @@ class NewznabCoreService:
         matched = [result for results in provider_results for result in results]
         return self._rank(matched, limit, providers)
 
+    async def structured_search(
+        self,
+        params: Dict[str, object],
+        limit: int,
+        categories: Optional[List[int]] = None,
+    ) -> List[SearchResult]:
+        """Forward TV/movie constraints unchanged and return ranked provider results.
+
+        Optional episode fields are valid for RSS, season, and absolute searches.
+        Providers resolve identifiers even when local metadata is unavailable.
+        """
+        providers = configured_newznab_providers()
+        batches = await asyncio.gather(
+            *(
+                newznab_client.search(
+                    provider,
+                    {
+                        **params,
+                        "limit": limit,
+                        "cat": self._categories(provider, categories),
+                    },
+                    fallback_categories=self._categories(provider, categories),
+                )
+                for provider in providers
+            )
+        )
+        return self._rank(
+            [result for batch in batches for result in batch], limit, providers
+        )
+
     async def generic_search(
         self,
         query: str,
         limit: int,
         *,
         season: Optional[int] = None,
-        episode: Optional[int] = None,
+        episode: Optional[Union[int, str]] = None,
         categories: Optional[list[int]] = None,
     ) -> list[SearchResult]:
         """Run a generic Newznab provider search."""
+        if (season is not None or episode is not None) and not (
+            season is not None and isinstance(episode, int)
+        ):
+            return await self.structured_search(
+                {"t": "tvsearch", "q": query or None, "season": season, "ep": episode},
+                limit,
+                categories,
+            )
         providers = configured_newznab_providers()
         provider_results = await asyncio.gather(
             *(
                 newznab_client.search(
                     provider,
-                    self._generic_params(provider, query, limit, categories),
+                    {
+                        **self._generic_params(provider, query, limit, categories),
+                        **(
+                            {"t": "tvsearch", "season": season, "ep": episode}
+                            if season is not None
+                            else {}
+                        ),
+                    },
                     fallback_categories=self._categories(provider, categories),
                 )
                 for provider in providers

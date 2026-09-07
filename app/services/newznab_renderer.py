@@ -24,9 +24,22 @@ class NewznabRenderer:
     <searching>
         <search available="yes" supportedParams="q,cat"/>
         <tv-search available="yes" supportedParams="q,tvdbid,season,ep,cat"/>
+        <movie-search available="yes" supportedParams="q,imdbid,tmdbid,year,cat"/>
     </searching>
     <categories>
+        <category id="2000" name="Movies">
+            <subcat id="2010" name="Foreign"/>
+            <subcat id="2020" name="Other"/>
+            <subcat id="2030" name="SD"/>
+            <subcat id="2040" name="HD"/>
+            <subcat id="2045" name="UHD"/>
+            <subcat id="2050" name="BluRay"/>
+            <subcat id="2060" name="3D"/>
+        </category>
         <category id="5000" name="TV">
+            <subcat id="5030" name="SD"/>
+            <subcat id="5040" name="HD"/>
+            <subcat id="5045" name="UHD"/>
             <subcat id="5070" name="Anime"/>
         </category>
     </categories>

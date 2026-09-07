@@ -1,7 +1,7 @@
 """Newznab API endpoints backed by configurable upstream providers."""
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -26,7 +26,10 @@ async def newznab_api(
     q: Optional[str] = Query(None, description="Search query"),
     tvdbid: Optional[int] = Query(None, description="TVDB ID"),
     season: Optional[int] = Query(None, description="Season number"),
-    ep: Optional[int] = Query(None, description="Episode number"),
+    ep: Optional[str] = Query(None, description="Episode number or MM/DD air date"),
+    tmdbid: Optional[int] = Query(None, description="TMDB movie ID"),
+    imdbid: Optional[str] = Query(None, description="IMDb movie ID"),
+    year: Optional[int] = Query(None, description="Movie year"),
     apikey: Optional[str] = Query(None, description="API key"),
     cat: Optional[str] = Query(None, description="Comma-separated category IDs"),
     limit: int = Query(100, description="Result limit"),
@@ -50,11 +53,19 @@ async def newznab_api(
     limit = max(0, min(limit, settings.MAX_RESULTS_PER_QUERY))
     offset = max(0, offset)
     categories = parse_categories(cat)
+    episode = int(ep) if ep is not None and ep.isdecimal() else ep
 
     if t == "tvsearch":
         return await handle_tvsearch(
-            request, tvdbid, season, ep, q, limit, offset, categories
+            request, tvdbid, season, episode, q, limit, offset, categories
         )
+    if t == "movie":
+        results = await newznab_core_service.structured_search(
+            {"t": "movie", "tmdbid": tmdbid, "imdbid": imdbid, "q": q, "year": year},
+            limit + offset,
+            categories or [2000],
+        )
+        return render_results(request, results, limit, offset)
     if t == "search":
         return await handle_search(
             request,
@@ -62,7 +73,7 @@ async def newznab_api(
             limit,
             offset,
             season=season,
-            episode=ep,
+            episode=episode,
             categories=categories,
         )
 
@@ -73,27 +84,26 @@ async def handle_tvsearch(
     request: Request,
     tvdb_id: Optional[int],
     season: Optional[int],
-    episode: Optional[int],
+    episode: Optional[Union[int, str]],
     query: Optional[str],
     limit: int,
     offset: int,
     categories: Optional[list[int]],
 ) -> Response:
     """Handle a Sonarr Newznab TV search."""
-    if tvdb_id is None:
-        return await handle_search(
-            request,
-            query or "",
-            limit,
-            offset,
-            season=season,
-            episode=episode,
-            categories=categories,
+    if tvdb_id is None or season is None or not isinstance(episode, int):
+        results = await newznab_core_service.structured_search(
+            {
+                "t": "tvsearch",
+                "tvdbid": tvdb_id,
+                "season": season,
+                "ep": episode,
+                "q": query,
+            },
+            limit + offset,
+            categories,
         )
-
-    if season is None or episode is None:
-        logger.warning("Newznab tvsearch for TVDB %s missing season/episode", tvdb_id)
-        return create_empty_rss(request, offset)
+        return render_results(request, results, limit, offset)
 
     try:
         results = await newznab_core_service.tv_search(
@@ -120,7 +130,7 @@ async def handle_search(
     offset: int,
     *,
     season: Optional[int] = None,
-    episode: Optional[int] = None,
+    episode: Optional[Union[int, str]] = None,
     categories: Optional[list[int]] = None,
 ) -> Response:
     """Handle a generic Newznab search."""

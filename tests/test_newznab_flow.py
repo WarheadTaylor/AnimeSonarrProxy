@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
@@ -12,6 +12,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api import newznab as newznab_module
 from app.config import NewznabProviderSettings, Settings, settings
@@ -584,3 +585,137 @@ def test_seasonal_match_with_resolved_context_still_works() -> None:
     matched = release_matcher.match_tv(result, make_tv_context())
     assert matched is not None
     assert "S23E01" in matched.title
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"t": "tvsearch", "tvdbid": "81797", "q": "01"},
+        {"t": "tvsearch", "tvdbid": "81797", "season": "23"},
+        {"t": "tvsearch", "q": "One Piece", "season": "23", "ep": "1"},
+        {"t": "tvsearch", "q": "Daily Show", "season": "2026", "ep": "09/06"},
+        {"t": "tvsearch", "tvdbid": "81797", "season": "23", "ep": "1"},
+        {"t": "tvsearch"},
+        {"t": "movie", "tmdbid": "123"},
+        {"t": "movie", "imdbid": "0133093"},
+        {"t": "movie", "q": "The Matrix", "year": "1999"},
+        {"t": "movie"},
+    ],
+)
+async def test_manager_requests_reach_upstream_and_download(
+    monkeypatch: pytest.MonkeyPatch, params: Dict[str, str]
+) -> None:
+    """Real route/client requests preserve constraints and use the same download API."""
+    provider = make_provider(url="https://indexer.example", api_path="/api")
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [provider])
+    monkeypatch.setattr(settings, "API_KEY", "local-secret")
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", None)
+    calls = []
+
+    async def no_metadata(*args: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "app.services.newznab_core.metadata_resolver.resolve_tv", no_metadata
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.params["t"] == "get":
+            return httpx.Response(
+                200, content=b"<nzb />", headers={"content-type": "application/x-nzb"}
+            )
+        return httpx.Response(
+            200,
+            text="""<rss><channel><item>
+            <title>Example release</title><guid>release-id</guid>
+            <pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate>
+            <enclosure length="2048" type="application/x-nzb" />
+            </item></channel></rss>""",
+        )
+
+    app = FastAPI()
+    app.include_router(newznab_module.router)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as upstream:
+        monkeypatch.setattr(newznab_module.newznab_client, "_client", upstream)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.local"
+        ) as client:
+            response = await client.get(
+                "/newznab", params={**params, "apikey": "local-secret"}
+            )
+            assert response.status_code == 200
+            root = ET.fromstring(response.text)
+            assert len(root.findall(".//item")) == 1
+            download = root.findtext(".//item/link")
+            nzb = await client.get(download)
+            assert nzb.content == b"<nzb />"
+
+    assert len(calls) == 2
+    assert all(
+        str(call.url).startswith("https://indexer.example/api?") for call in calls
+    )
+    expected = {
+        **params,
+        "apikey": "upstream-secret",
+        "limit": "100",
+        "cat": "2000" if params["t"] == "movie" else "5070",
+    }
+    assert dict(calls[0].url.params) == expected
+    assert dict(calls[1].url.params) == {
+        "t": "get",
+        "id": "release-id",
+        "apikey": "upstream-secret",
+    }
+    assert "upstream-secret" not in response.text
+
+
+def test_caps_advertise_movie_search_and_categories() -> None:
+    """Managers can discover movie identifiers and select movie categories."""
+    root = ET.fromstring(make_test_app().get("/newznab?t=caps").text)
+    movie = root.find("./searching/movie-search")
+    assert movie.attrib["available"] == "yes"
+    assert {"q", "imdbid", "tmdbid", "year"} <= set(
+        movie.attrib["supportedParams"].split(",")
+    )
+    assert root.find("./categories/category[@id='2000']") is not None
+    assert root.find("./categories/category/subcat[@id='5070']") is not None
+
+
+@pytest.mark.parametrize(
+    "url,path,expected",
+    [
+        ("https://api.nzbgeek.info", None, "https://api.nzbgeek.info"),
+        ("https://api.nzbgeek.info", "", "https://api.nzbgeek.info"),
+        ("https://indexer.example/api/", None, "https://indexer.example/api"),
+        ("https://indexer.example/base/", "/api", "https://indexer.example/base/api"),
+    ],
+)
+def test_provider_api_url(url: str, path: Optional[str], expected: str) -> None:
+    """Complete endpoints and explicit API paths support root and subpath APIs."""
+    assert make_provider(url=url, api_path=path).api_url == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "indexer.example",
+        "ftp://indexer.example",
+        "https://user:secret@indexer.example",
+        "https://indexer.example?apikey=secret",
+    ],
+)
+def test_provider_rejects_invalid_api_url(url: str) -> None:
+    """Invalid endpoint syntax fails during configuration."""
+    with pytest.raises(ValidationError):
+        make_provider(url=url)
+
+
+def test_single_provider_api_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single-provider settings carry the configured API path into requests."""
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [])
+    monkeypatch.setattr(settings, "NEWZNAB_URL", "https://indexer.example")
+    monkeypatch.setattr(settings, "NEWZNAB_API_PATH", "/api")
+    monkeypatch.setattr(settings, "NEWZNAB_API_KEY", "upstream-secret")
+    assert configured_newznab_providers()[0].api_url == "https://indexer.example/api"
