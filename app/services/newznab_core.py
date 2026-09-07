@@ -110,8 +110,7 @@ class NewznabCoreService:
                 )
                 is not None
             ]
-            if matched:
-                return self._rank(matched, limit, providers)
+            return self._rank(matched, limit, providers)
         return self._rank(results, limit, providers)
 
     async def _search_tv_provider(

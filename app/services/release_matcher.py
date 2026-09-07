@@ -43,7 +43,8 @@ class ReleaseMatcher:
     ) -> Optional[SearchResult]:
         """Return a normalized TV result matched on absolute numbering alone."""
         parsed = release_parser.parse(result.original_title or result.title)
-        if parsed.is_batch:
+        # Seasonal episode numbers need a mapping supplied through match_tv.
+        if parsed.is_batch or parsed.season_numbers:
             return None
         if not self._matched_title(parsed, [series_title]):
             return None

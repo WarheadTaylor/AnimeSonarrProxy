@@ -2,10 +2,10 @@
 
 import json
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, NoDecode
 
 
 class NewznabProviderSettings(BaseModel):
@@ -40,14 +40,16 @@ class Settings(BaseSettings):
     NEWZNAB_API_KEY: Optional[str] = None
     NEWZNAB_ID: str = "newznab"
     NEWZNAB_NAME: str = "Newznab"
-    NEWZNAB_CATEGORIES: List[int] = Field(default_factory=lambda: [5070])
+    NEWZNAB_CATEGORIES: Annotated[List[int], NoDecode] = Field(
+        default_factory=lambda: [5070]
+    )
     NEWZNAB_MAX_QUERY_VARIANTS: int = 12
-    NEWZNAB_DEFAULT_CATEGORIES: List[int] = Field(default_factory=lambda: [5070])
+    NEWZNAB_DEFAULT_CATEGORIES: Annotated[List[int], NoDecode] = Field(
+        default_factory=lambda: [5070]
+    )
     PUBLIC_BASE_URL: Optional[str] = None
 
-    @field_validator(
-        "NEWZNAB_CATEGORIES", "NEWZNAB_DEFAULT_CATEGORIES", mode="before"
-    )
+    @field_validator("NEWZNAB_CATEGORIES", "NEWZNAB_DEFAULT_CATEGORIES", mode="before")
     @classmethod
     def parse_newznab_categories(cls, value: Any) -> Any:
         """Allow Newznab category lists as JSON arrays or comma-separated text."""

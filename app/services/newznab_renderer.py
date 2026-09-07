@@ -1,7 +1,7 @@
 """Newznab XML rendering for upstream Usenet provider responses."""
 
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from xml.etree.ElementTree import Element, SubElement, register_namespace, tostring
 
 from app.config import settings
@@ -69,8 +69,9 @@ class NewznabRenderer:
         SubElement(item, "title").text = result.title
         SubElement(item, "guid").text = result.provider_guid or result.guid
         SubElement(item, "link").text = download_url
-        if result.info_url:
-            SubElement(item, "comments").text = result.info_url
+        info_url = self._public_info_url(result.info_url)
+        if info_url:
+            SubElement(item, "comments").text = info_url
         SubElement(item, "pubDate").text = result.pub_date.strftime(
             "%a, %d %b %Y %H:%M:%S +0000"
         )
@@ -89,9 +90,43 @@ class NewznabRenderer:
             self._attr(item, "category", str(category))
 
         for name, value in result.provider_attrs.items():
-            if name in {"size", "category"}:
+            # Only expose known metadata, never arbitrary upstream URL/key attributes.
+            if name not in {
+                "guid",
+                "grabs",
+                "files",
+                "poster",
+                "group",
+                "usenetdate",
+                "password",
+                "tvdbid",
+                "rageid",
+                "imdb",
+                "imdbid",
+                "tmdbid",
+                "season",
+                "episode",
+                "language",
+            }:
                 continue
             self._attr(item, name, value)
+
+    def _public_info_url(self, value: Optional[str]) -> Optional[str]:
+        """Keep only public item identifiers in upstream information URLs."""
+        if not value:
+            return None
+        try:
+            url = urlsplit(value)
+            if url.scheme not in {"http", "https"} or not url.netloc or url.username:
+                return None
+            query = [
+                (key, val)
+                for key, val in parse_qsl(url.query)
+                if key.lower() in {"id", "guid"}
+            ]
+            return urlunsplit((url.scheme, url.netloc, url.path, urlencode(query), ""))
+        except ValueError:
+            return None
 
     def _api_url(self, request_base_url: str) -> str:
         return f"{self._base_url(request_base_url)}/newznab"

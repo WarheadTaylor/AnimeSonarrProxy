@@ -1,9 +1,11 @@
 """Newznab upstream provider client and RSS parsing."""
 
 import logging
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -14,6 +16,30 @@ from app.models import SearchResult
 logger = logging.getLogger(__name__)
 
 NEWZNAB_NS = "http://www.newznab.com/DTD/2010/feeds/attributes/"
+
+
+class ApiKeyLogFilter(logging.Filter):
+    """Redact API key query values from HTTP client's request diagnostics."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Sanitize a formatted log record before handlers receive it."""
+        record.msg = re.sub(
+            r"(?i)([?&](?:apikey|api_key)=)[^&\s\"'<>]+",
+            r"\1[REDACTED]",
+            record.getMessage(),
+        )
+        record.args = ()
+        return True
+
+
+for _logger_name in (
+    "httpx",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+):
+    logging.getLogger(_logger_name).addFilter(ApiKeyLogFilter())
 
 
 def configured_newznab_providers() -> list[NewznabProviderSettings]:
@@ -78,7 +104,16 @@ class NewznabClient:
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.warning("Newznab provider %s search failed: %s", provider.id, exc)
+            logger.warning(
+                "Newznab provider %s search failed: %s status=%s",
+                provider.id,
+                type(exc).__name__,
+                (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                ),
+            )
             return []
 
         return self.parse_rss(provider, response.text, fallback_categories)
@@ -155,6 +190,17 @@ class NewznabClient:
 
         attrs = self._newznab_attrs(item)
         provider_guid = attrs.get("guid") or guid or link
+        # URL GUIDs/download links must never become credential-bearing local IDs.
+        if provider_guid.lower().startswith(("http://", "https://")):
+            try:
+                url = urlsplit(provider_guid)
+                query = parse_qs(url.query)
+                provider_guid = (query.get("id") or query.get("guid") or [""])[0]
+            except ValueError:
+                return None
+            if not provider_guid:
+                return None
+        attrs["guid"] = provider_guid
         categories = self._categories(attrs, fallback_categories or provider.categories)
         size = self._size(attrs, item)
         pub_date = self._parse_date(item.findtext("pubDate", ""))

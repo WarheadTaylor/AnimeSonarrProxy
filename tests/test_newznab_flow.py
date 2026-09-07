@@ -1,7 +1,11 @@
 """Regression coverage for Newznab provider proxy support."""
 
 import asyncio
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
+from urllib.parse import parse_qs, urlsplit
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -19,6 +23,7 @@ from app.services.newznab_core import (
     NewznabCoreService,
 )
 from app.services.newznab_renderer import NewznabRenderer
+from app.services.release_matcher import release_matcher
 
 
 def make_provider(**updates) -> NewznabProviderSettings:
@@ -194,9 +199,9 @@ async def test_newznab_tv_search_bounds_fallback_concurrency(monkeypatch):
     )
     monkeypatch.setattr("app.services.newznab_core.newznab_client.search", fake_search)
 
-    expected_fallbacks = len(
-        service._tv_params(provider, make_tv_context(), 100, None)
-    ) - 1
+    expected_fallbacks = (
+        len(service._tv_params(provider, make_tv_context(), 100, None)) - 1
+    )
     results = await service.tv_search(81797, 23, 1, 100)
 
     assert fallback_calls == expected_fallbacks
@@ -321,9 +326,7 @@ def test_newznab_search_requires_configured_provider(monkeypatch):
     monkeypatch.setattr(settings, "NEWZNAB_URL", None)
     monkeypatch.setattr(settings, "NEWZNAB_API_KEY", None)
 
-    response = make_test_app().get(
-        "/newznab?t=search&q=one+piece&apikey=local-secret"
-    )
+    response = make_test_app().get("/newznab?t=search&q=one+piece&apikey=local-secret")
 
     assert response.status_code == 503
 
@@ -358,7 +361,9 @@ async def test_newznab_get_proxies_upstream_nzb(monkeypatch):
     assert response.status_code == 200
     assert response.content == b"<?xml version='1.0'?><nzb />"
     assert response.headers["content-type"].startswith("application/x-nzb")
-    assert response.headers["content-disposition"] == 'attachment; filename="release.nzb"'
+    assert (
+        response.headers["content-disposition"] == 'attachment; filename="release.nzb"'
+    )
 
 
 @pytest.mark.asyncio
@@ -400,3 +405,182 @@ async def test_newznab_tvsearch_uses_core_service(monkeypatch):
         }
     ]
     assert "application/x-nzb" in response.text
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("5070", [5070]),
+        ("5070,5040", [5070, 5040]),
+        ("[5070,5040]", [5070, 5040]),
+        ("", []),
+    ],
+)
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+def test_category_settings_from_real_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw: str,
+    expected: List[int],
+    source: str,
+) -> None:
+    """Both category settings accept documented formats through settings sources."""
+    names = ("NEWZNAB_CATEGORIES", "NEWZNAB_DEFAULT_CATEGORIES")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    if source == "environment":
+        for name in names:
+            monkeypatch.setenv(name, raw)
+        parsed = Settings(_env_file=None)
+    else:
+        env_file = tmp_path / "test.env"
+        env_file.write_text(
+            "\n".join(f"{name}='{raw}'" for name in names), encoding="utf-8"
+        )
+        parsed = Settings(_env_file=env_file)
+    for name in names:
+        assert getattr(parsed, name) == expected
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        "",
+        "<comments>https://provider.invalid/details?id=abc&amp;apikey=upstream-secret</comments>",
+    ],
+)
+@pytest.mark.parametrize(
+    "guid",
+    ["abc", "https://provider.invalid/api?t=get&amp;id=abc&amp;apikey=upstream-secret"],
+)
+def test_rss_does_not_expose_authenticated_upstream_urls(
+    comments: str, guid: str
+) -> None:
+    """Parsed feeds keep download IDs usable without publishing upstream credentials."""
+    xml = f"""<rss xmlns:newznab="{NEWZNAB_NS}"><channel><item>
+      <title>One Piece - 01</title><guid>{guid}</guid>
+      <link>https://provider.invalid/api?t=get&amp;id=abc&amp;apikey=upstream-secret</link>
+      {comments}
+      <newznab:attr name="downloadurl" value="https://provider.invalid/?apikey=upstream-secret" />
+      <newznab:attr name="apikey" value="upstream-secret" />
+      <newznab:attr name="grabs" value="5" />
+    </item></channel></rss>"""
+    results = NewznabClient().parse_rss(make_provider(), xml)
+    assert len(results) == 1
+    rendered = NewznabRenderer().render(
+        results, request_base_url="http://proxy.invalid"
+    )
+    assert "upstream-secret" not in rendered
+    root = ET.fromstring(rendered)
+    download = root.findtext(".//item/link")
+    assert parse_qs(urlsplit(download).query)["id"] == ["abc"]
+    assert root.find(f".//{{{NEWZNAB_NS}}}attr[@name='grabs']").attrib["value"] == "5"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["success", "status", "timeout"])
+async def test_search_logs_hide_upstream_key(
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    """Application errors and HTTPX request logs must omit upstream keys."""
+    caplog.set_level(logging.DEBUG)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if failure == "timeout":
+            raise httpx.ReadTimeout(str(request.url), request=request)
+        return httpx.Response(401 if failure == "status" else 200, text="<rss />")
+
+    client = NewznabClient()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    try:
+        assert await client.search(make_provider(), {"t": "search"}) == []
+    finally:
+        await client.close()
+    assert "upstream-secret" not in caplog.text
+    if failure != "success":
+        assert "search failed" in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["status", "timeout"])
+def test_download_failure_logs_hide_upstream_key(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    """Failed proxied downloads retain safe diagnostics and return a gateway error."""
+    monkeypatch.setattr(settings, "API_KEY", "local-secret")
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+
+    async def fail(provider: NewznabProviderSettings, guid: str) -> httpx.Response:
+        request = httpx.Request(
+            "GET", provider.url, params={"apikey": provider.api_key}
+        )
+        if failure == "timeout":
+            raise httpx.ReadTimeout(str(request.url), request=request)
+        response = httpx.Response(401, request=request)
+        response.raise_for_status()
+        return response
+
+    monkeypatch.setattr(newznab_module.newznab_client, "get_nzb", fail)
+    response = make_test_app().get(
+        "/newznab?t=get&provider=nzbgeek&id=abc&apikey=local-secret"
+    )
+    assert response.status_code == 502
+    assert "get failed" in caplog.text
+    assert "upstream-secret" not in caplog.text + response.text
+
+
+@pytest.mark.parametrize(
+    "title,accepted",
+    [
+        ("[Group] One Piece S02E01 (1080p)", False),
+        ("[Group] One Piece S01E01 (1080p)", False),
+        ("[Group] One Piece - 01 (1080p)", True),
+        ("[Group] One Piece - 02 (1080p)", False),
+    ],
+)
+def test_absolute_matching_requires_absolute_numbering(
+    title: str, accepted: bool
+) -> None:
+    """A seasonal episode number alone cannot establish an absolute match."""
+    result = make_usenet_result().model_copy(
+        update={"title": title, "original_title": title}
+    )
+    matched = release_matcher.match_tv_absolute(result, "One Piece", 1)
+    assert (matched is not None) == accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query,expected_count", [("One Piece 01", 0), ("One Piece 02", 1), ("One Piece", 1)]
+)
+async def test_generic_search_preserves_empty_episode_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    expected_count: int,
+) -> None:
+    """Recognized episode queries remain filtered even when no release matches."""
+    monkeypatch.setattr(settings, "NEWZNAB_PROVIDERS", [make_provider()])
+    title = "[Group] One Piece - 02 (1080p)"
+    result = make_usenet_result().model_copy(
+        update={"title": title, "original_title": title}
+    )
+
+    async def search(*args: object, **kwargs: object) -> List[SearchResult]:
+        return [result]
+
+    monkeypatch.setattr("app.services.newznab_core.newznab_client.search", search)
+    results = await NewznabCoreService().generic_search(query, 100)
+    assert len(results) == expected_count
+
+
+def test_seasonal_match_with_resolved_context_still_works() -> None:
+    """TVDB-resolved seasonal matches continue to use the confirmed episode mapping."""
+    title = "[Group] One Piece S23E01 (1080p)"
+    result = make_usenet_result().model_copy(
+        update={"title": title, "original_title": title}
+    )
+    matched = release_matcher.match_tv(result, make_tv_context())
+    assert matched is not None
+    assert "S23E01" in matched.title

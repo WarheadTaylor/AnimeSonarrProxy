@@ -162,11 +162,21 @@ async def handle_get(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise HTTPException(status_code=404, detail="NZB not found") from exc
-        logger.warning("Newznab provider %s get failed: %s", provider.id, exc)
-        raise HTTPException(status_code=502, detail="Upstream NZB fetch failed") from exc
+        logger.warning(
+            "Newznab provider %s get failed: status=%s",
+            provider.id,
+            exc.response.status_code,
+        )
+        raise HTTPException(
+            status_code=502, detail="Upstream NZB fetch failed"
+        ) from exc
     except httpx.HTTPError as exc:
-        logger.warning("Newznab provider %s get failed: %s", provider.id, exc)
-        raise HTTPException(status_code=502, detail="Upstream NZB fetch failed") from exc
+        logger.warning(
+            "Newznab provider %s get failed: %s", provider.id, type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=502, detail="Upstream NZB fetch failed"
+        ) from exc
 
     headers = {}
     if upstream.headers.get("content-disposition"):
