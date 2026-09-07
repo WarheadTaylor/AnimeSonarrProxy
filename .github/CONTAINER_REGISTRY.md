@@ -1,154 +1,66 @@
-# Container Registry Setup
+# Container images
 
-This project uses GitHub Actions to automatically build and push Docker images to GitHub Container Registry (ghcr.io).
+The [Docker build workflow](workflows/docker-build.yml) builds images for
+`linux/amd64` and `linux/arm64`. This page describes the repository workflow;
+it does not confirm which tags are currently published.
 
-## Automatic Builds
+## Build triggers and tags
 
-The workflow (`.github/workflows/docker-build.yml`) automatically builds and pushes images when:
+| Event | Workflow behavior |
+| --- | --- |
+| Push to `2.1`, `beta`, `main`, or `master` | Build and push a branch tag and a `sha-` tag. |
+| Push a tag matching `v*.*.*` | Build and push semantic version tags and a `sha-` tag. |
+| Pull request targeting `beta`, `main`, or `master` | Build both platforms without pushing an image. |
+| Manual workflow dispatch | Build and push for the selected ref. |
 
-- **Push to `main` branch** → Tagged as `main` and `latest`
-- **Push to `2.0` branch** → Tagged as `2.0` for testing the next major version
-- **Push to `beta` branch** → Tagged as `beta`
-- **Push a tag like `v1.0.0`** → Tagged as `v1.0.0`, `1.0`, and `1`
-- **Pull Request** → Builds but doesn't push (testing only)
+The metadata configuration explicitly adds `latest` for the default branch.
+Semantic version metadata can also add `latest` through the metadata action's
+automatic behavior. A branch tag follows that branch; it is not a fixed release.
 
-## Image Tags
+For a Git tag such as `v1.2.3`, the version patterns produce `1.2.3`, `1.2`, and
+`1` image tags. Use a tag that exists in the registry when pinning an image.
 
-Images are available at: `ghcr.io/warheadtaylor/animesonarrproxy`
+## Run an image
 
-Available tags:
-- `main` - Stable branch build
-- `2.0` - Next major version testing branch build
-- `beta` - Beta branch build
-- `latest` - Latest stable build from main branch
-- `v1.0.0` - Specific version tags (semver)
-- `1.0` - Major.minor version
-- `1` - Major version only
-- `sha-abc1234` - Specific commit SHA for a build
+Use [the README setup](../README.md#quick-start-with-docker-compose) or the
+[Unraid guide](../UNRAID_SETUP.md). Both use
+`ghcr.io/warheadtaylor/animesonarrproxy:latest`.
 
-## Using the Pre-built Image
-
-### Docker Compose (Recommended)
+To select a branch build, change the Compose image entry, for example:
 
 ```yaml
-services:
-  animesonarrproxy:
-    image: ghcr.io/warheadtaylor/animesonarrproxy:latest
-    # ... rest of configuration
+image: ghcr.io/warheadtaylor/animesonarrproxy:2.1
 ```
 
-### Docker CLI
+Pull and recreate the service after changing its tag:
 
 ```bash
-docker pull ghcr.io/warheadtaylor/animesonarrproxy:latest
+docker compose pull
+docker compose up -d
+```
 
+## Build the current checkout
+
+From the repository root:
+
+```bash
+docker build -t animesonarrproxy:local .
 docker run -d \
   --name animesonarrproxy \
   -p 8000:8000 \
-  -v ./data:/app/data \
-  -e PROWLARR_URL=http://prowlarr:9696 \
-  -e PROWLARR_API_KEY=your_key \
-  ghcr.io/warheadtaylor/animesonarrproxy:latest
+  -v "$(pwd)/data:/app/data" \
+  --env-file .env \
+  animesonarrproxy:local
 ```
 
-## Platform Support
+Create `.env` from [the example](../.env.example), set your own `API_KEY`, and
+keep `DATA_DIR=/app/data` for this command. See the README for manager setup.
 
-Images are built for multiple architectures:
-- `linux/amd64` (x86_64)
-- `linux/arm64` (ARM64/aarch64)
+## Publication and troubleshooting
 
-Docker will automatically pull the correct architecture for your system.
+The workflow uses `GITHUB_TOKEN` with `contents: read` and `packages: write`.
+It skips registry login and image publication for pull requests.
 
-## Testing the 2.0 Branch
-
-Users who want to test the 2.0 branch without moving to `latest` can pin the 2.0
-image tag:
-
-```yaml
-services:
-  animesonarrproxy:
-    image: ghcr.io/warheadtaylor/animesonarrproxy:2.0
-```
-
-The `latest` tag is only published from the default branch, so branch testing does
-not affect existing users who pull `latest`.
-
-## Updating
-
-To update to the latest version:
-
-```bash
-# Docker Compose
-docker-compose pull
-docker-compose up -d
-
-# Docker CLI
-docker pull ghcr.io/warheadtaylor/animesonarrproxy:latest
-docker stop animesonarrproxy
-docker rm animesonarrproxy
-# Run docker run command again
-```
-
-## Building Locally
-
-If you prefer to build from source:
-
-```bash
-git clone https://github.com/WarheadTaylor/AnimeSonarrProxy.git
-cd AnimeSonarrProxy
-docker build -t animesonarrproxy:local .
-```
-
-## Releases
-
-To create a new release:
-
-1. Update version in relevant files
-2. Commit changes
-3. Create and push a tag:
-   ```bash
-   git tag -a v1.0.0 -m "Release v1.0.0"
-   git push origin v1.0.0
-   ```
-4. GitHub Actions will automatically build and push the tagged release
-
-## Viewing Available Images
-
-Visit the package page:
-https://github.com/WarheadTaylor/AnimeSonarrProxy/pkgs/container/animesonarrproxy
-
-## Permissions
-
-The GitHub Actions workflow uses `GITHUB_TOKEN` which is automatically provided. No additional secrets are required.
-
-Images are public by default. To make them public (if they're not already):
-
-1. Go to https://github.com/WarheadTaylor/AnimeSonarrProxy/pkgs/container/animesonarrproxy
-2. Click "Package settings"
-3. Scroll to "Danger Zone"
-4. Click "Change visibility" → "Public"
-
-## Troubleshooting
-
-### Image pull errors
-
-If you get permission errors pulling the image:
-
-```bash
-# Login to GitHub Container Registry
-echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
-```
-
-### Build failures
-
-Check the Actions tab: https://github.com/WarheadTaylor/AnimeSonarrProxy/actions
-
-### Using specific versions
-
-For production, it's recommended to pin to a specific version:
-
-```yaml
-image: ghcr.io/warheadtaylor/animesonarrproxy:v1.0.0
-```
-
-Instead of using `latest`, which can change unexpectedly.
+If an image cannot be pulled, check the requested tag, package visibility, and
+registry access. The workflow does not set package visibility.
+Inspect the repository's Docker build workflow run for build or publication errors.

@@ -1,64 +1,47 @@
 # AGENTS.md - AI Coding Agent Guidelines for AnimeSonarrProxy
 
-## Project Overview
+## Project overview
 
-AnimeSonarrProxy is a Python FastAPI application that acts as a Torznab-compatible proxy
-between Sonarr and Prowlarr, providing anime title mapping and episode number translation.
+AnimeSonarrProxy is a Python FastAPI application with two search endpoints:
+`/api` searches Nyaa RSS for Sonarr and Radarr; `/newznab` searches configured
+Newznab providers and proxies NZB downloads. Metadata services resolve titles
+and episode numbers. The application has no Prowlarr backend or WebUI.
 
-## Build and Run Commands
+## Setup and verification
 
-### Development Setup
+Follow [README.md](README.md#development) for local setup and
+[REQUIREMENTS.md](REQUIREMENTS.md) for dependency installation.
+
 ```bash
-python -m venv venv
-source venv/bin/activate      # Linux/macOS  |  venv\Scripts\activate (Windows)
-pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m pytest
+python -m pytest tests/test_direct_nyaa_flow.py
+python -m pytest tests/test_newznab_flow.py
 ```
 
-### Docker Commands
+Optional style tools are not in the development requirements:
+
 ```bash
-docker build -t animesonarrproxy .
-docker run -p 8000:8000 -v ./data:/app/data animesonarrproxy
-docker-compose up -d --build
+python -m pip install mypy black isort
+mypy app/
+black app/
+isort app/
 ```
 
-### Testing Commands
-```bash
-pip install pytest pytest-asyncio httpx    # Install test dependencies
-pytest                                      # Run all tests
-pytest tests/test_mapping.py               # Run a single test file
-pytest tests/test_mapping.py::test_func    # Run a single test function
-pytest -v                                   # Verbose output
-pytest -k "mapping"                         # Tests matching pattern
-```
+## Code locations
 
-### Linting and Formatting
-```bash
-pip install mypy black isort
-mypy app/        # Type checking
-black app/       # Code formatting
-isort app/       # Import sorting
-```
+- `app/main.py` configures FastAPI and service startup.
+- `app/config.py` defines settings and provider validation.
+- `app/models.py` defines request context and release data.
+- `app/api/torznab.py` and `app/api/newznab.py` handle the endpoints.
+- `app/services/core.py` and `app/services/newznab_core.py` coordinate searches.
+- `app/services/metadata.py` resolves titles and episode metadata.
+- Other `app/services/` modules contain provider clients, release parsing,
+  matching, and RSS rendering.
 
-## Project Structure
-
-```
-app/
-├── main.py           # FastAPI entry point, lifespan events
-├── config.py         # pydantic-settings configuration
-├── models.py         # Pydantic models for data validation
-├── api/
-│   ├── torznab.py    # Torznab API endpoints (/api)
-│   └── webui.py      # WebUI endpoints (/, /api/mappings)
-└── services/
-    ├── anime_db.py   # anime-offline-database handler
-    ├── anilist.py    # AniList GraphQL API client
-    ├── episode.py    # Episode number translation
-    ├── mapping.py    # Title mapping service
-    ├── prowlarr.py   # Prowlarr API client
-    ├── query.py      # Query building and deduplication
-    └── thexem.py     # TheXEM.info API client
-```
+When changing search terms, read [CONTEXT.md](CONTEXT.md). When changing the
+Nyaa backend, read the [design decision](docs/adr/0001-direct-nyaa-core-flow.md).
+When changing settings or deployment, update the configuration reference in
+[README.md](README.md#configuration) and `.env.example` to match `app/config.py`.
 
 ## Code Style Guidelines
 
@@ -73,14 +56,14 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.models import AnimeMapping
+from app.models import SearchResult
 ```
 
 ### Type Hints
 Always use type hints for function parameters and return values:
 ```python
-async def get_mapping(self, tvdb_id: int) -> Optional[AnimeMapping]:
-    """Get anime mapping by TVDB ID."""
+async def get_result(self, tvdb_id: int) -> Optional[SearchResult]:
+    """Get a release result by TVDB ID."""
     ...
 ```
 Use `Optional[T]` for nullable values. Use `List[T]` and `Dict[K, V]` for collections.
@@ -154,9 +137,8 @@ Use pydantic-settings BaseSettings with env_file = ".env" and case_sensitive = T
 - **httpx**: Async HTTP client
 - **uvicorn**: ASGI server
 
-## Environment Variables
+## Environment variables
 
-Required: `API_KEY`, `PROWLARR_URL`, `PROWLARR_API_KEY`
-
-Optional: `HOST` (0.0.0.0), `PORT` (8000), `DATA_DIR` (/app/data), `LOG_LEVEL` (INFO),
-`CACHE_TTL` (3600), `MAPPING_CACHE_TTL` (604800)
+Set a local `API_KEY`. Provider and manager integrations are optional. Use
+[app/config.py](app/config.py) for accepted settings and defaults, and the
+[configuration guide](README.md#configuration) for deployment behavior.

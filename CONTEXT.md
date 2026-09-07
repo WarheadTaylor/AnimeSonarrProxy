@@ -1,23 +1,27 @@
-# Context Glossary
+# Search glossary
 
-## Search Candidate Title
+Terms used for media searches and returned releases.
 
-A title variant sent to Nyaa as part of a search query. Candidate titles come from
-manager metadata and anime metadata sources, and are optimized for finding releases.
+## Language
 
-## Nyaa Release Title
+**Search candidate title**:
+A title variant used to find releases. Candidate titles come from manager metadata
+and anime metadata sources.
 
-The original release title returned by Nyaa RSS. This is preserved for logging,
-debugging, and traceability, but it is not necessarily safe for Sonarr or Radarr to
-parse directly.
+**Source release title**:
+The original title supplied by Nyaa or an upstream Newznab provider.
+A Nyaa release title is a source release title from Nyaa.
 
-## Returned Release Title
+**Returned release title**:
+The RSS item title sent to Sonarr or Radarr. It can be normalized from the source
+release title to include the requested title and episode numbers.
 
-The normalized RSS item title returned by AnimeSonarrProxy to Sonarr or Radarr.
-Returned release titles are shaped for the receiving manager's parser while keeping
-useful release metadata from the Nyaa release title.
+**Confident match**:
+A release whose parsed metadata meets the requested media identity and episode
+or movie constraints. This term applies to results that pass local match filtering.
 
-## Confident Match
+**Upstream Newznab provider**:
+A configured Usenet indexer that supplies search results and NZB downloads.
 
-A Nyaa result whose parsed release metadata matches the requested media identity and
-episode or movie constraints closely enough to return to Sonarr or Radarr.
+**Manager**:
+Sonarr or Radarr, which requests releases from the proxy.

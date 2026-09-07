@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted
+Accepted for the direct Nyaa Torznab flow.
+
+The application now also has a separate `/newznab` endpoint for upstream Usenet
+providers. The original decision below records the scope of the Nyaa rewrite;
+its "only v1 search backend" wording does not describe all current endpoints.
+See [the current request flow](../../README.md#request-flow).
 
 ## Context
 

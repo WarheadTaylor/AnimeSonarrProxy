@@ -1,15 +1,14 @@
-# Unraid Setup
+# Unraid setup
 
-AnimeSonarrProxy now searches Nyaa directly. Prowlarr is not required for v1 of
-the rewritten core flow.
+Run AnimeSonarrProxy with Docker Compose on Unraid. You need Compose support,
+a free host port, and network access to the search and metadata providers.
+Prowlarr is not required.
 
-## Docker Compose
+## Create the service
 
 Create `/mnt/user/appdata/animesonarrproxy/docker-compose.yml`:
 
 ```yaml
-version: "3.8"
-
 services:
   animesonarrproxy:
     image: ghcr.io/warheadtaylor/animesonarrproxy:latest
@@ -20,61 +19,83 @@ services:
     volumes:
       - /mnt/user/appdata/animesonarrproxy/data:/app/data
     environment:
-      - API_KEY=change-me
-      - HOST=0.0.0.0
-      - PORT=8000
-      - NYAA_URL=https://nyaa.si
-      - NYAA_NO_REMAKES=true
-      - NYAA_TRUSTED_ONLY=false
-      - SONARR_URL=http://sonarr:8989
-      - SONARR_API_KEY=your_sonarr_api_key
-      - RADARR_URL=http://radarr:7878
-      - RADARR_API_KEY=your_radarr_api_key
-      - DATA_DIR=/app/data
-      - LOG_LEVEL=INFO
+      API_KEY: ${API_KEY}
+      NYAA_URL: https://nyaa.si
+      NYAA_NO_REMAKES: "true"
+      NYAA_TRUSTED_ONLY: "false"
+      DATA_DIR: /app/data
+      LOG_LEVEL: INFO
 ```
 
-Start it:
+Create `.env` in the same directory and set your own key:
+
+```env
+API_KEY=replace-with-your-own-key
+```
+
+Start the service and check its API:
 
 ```bash
 cd /mnt/user/appdata/animesonarrproxy
-docker-compose up -d
+docker compose up -d
+curl --fail 'http://localhost:8000/api?t=caps'
 ```
 
-## Sonarr
+The API returns XML capabilities. Check startup errors with
+`docker compose logs --tail=100 animesonarrproxy`.
 
-Add a custom Torznab indexer:
+## Connect Sonarr or Radarr
 
-- URL: `http://your-unraid-ip:8000`
-- API path: `/api`
-- API key: the `API_KEY` value above
-- Categories: `5070`
+Use `http://your-unraid-ip:8000` as the indexer URL and the key from `.env`.
 
-Set `SONARR_URL` and `SONARR_API_KEY` when the proxy can reach Sonarr. This lets
-the proxy confirm season/episode and absolute episode metadata.
+| Manager and indexer type | API path | Categories |
+| --- | --- | --- |
+| Sonarr custom Torznab | `/api` | `5070` for anime; `100041` for English-translated live-action TV |
+| Radarr custom Torznab | `/api` | `2000,2060`; `2060` selects Nyaa anime movies |
+| Sonarr custom Newznab | `/newznab` | `5070` for anime |
+| Radarr custom Newznab | `/newznab` | `2000` or provider movie subcategories |
 
-The proxy searches Nyaa only for selected Torznab categories. Select Anime
-(`5070`) to search Nyaa Anime English-translated (`1_2`), or
-Live Action/English-translated (`100041`) to search Nyaa Live Action
-English-translated (`4_1`).
+Newznab requires an upstream provider. Add its settings under `environment`:
 
-## Radarr
+```yaml
+      NEWZNAB_URL: ${NEWZNAB_URL}
+      NEWZNAB_API_KEY: ${NEWZNAB_API_KEY}
+```
 
-Add a custom Torznab indexer:
+Set both values in `.env`. Follow the [Newznab setup guide](README.md#sonarr-newznab-setup)
+for API paths, multiple providers, and download addresses. The local Torznab
+Movies/Anime category `2060` means Movies/3D on the Newznab endpoint.
 
-- URL: `http://your-unraid-ip:8000`
-- API path: `/api`
-- API key: the `API_KEY` value above
-- Categories: `2000,2060`
+For manager metadata lookups, add the applicable pair under `environment` and
+set its values in `.env`:
 
-Set `RADARR_URL` and `RADARR_API_KEY` when the proxy can reach Radarr. This lets
-the proxy confirm movie titles, alternate titles, IDs, and year.
+```yaml
+      SONARR_URL: ${SONARR_URL}
+      SONARR_API_KEY: ${SONARR_API_KEY}
+      RADARR_URL: ${RADARR_URL}
+      RADARR_API_KEY: ${RADARR_API_KEY}
+```
 
-## Data
+Use addresses reachable from the proxy container, such as
+`http://your-unraid-ip:8989`. Container names such as `sonarr` work only when the
+containers share a Docker network with name resolution. `localhost` refers to
+the proxy container.
 
-Persist `/app/data`. It stores cached anime metadata and TheXEM data.
+Run `docker compose up -d` after changing settings. Use the indexer's Test button
+in each manager to check its connection.
 
-Back up:
+## Data and updates
 
-- `/mnt/user/appdata/animesonarrproxy/data/anime-offline-database.json`
-- `/mnt/user/appdata/animesonarrproxy/data/thexem_cache.json`
+The mounted data directory stores `anime-offline-database.json` and
+`thexem_cache.json`. Preserve this directory to retain cached metadata.
+Keep your Compose file and `.env` when moving the service.
+
+To update the selected image:
+
+```bash
+cd /mnt/user/appdata/animesonarrproxy
+docker compose pull
+docker compose up -d
+```
+
+See [container images](.github/CONTAINER_REGISTRY.md) for branch and release tags.

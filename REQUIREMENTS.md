@@ -1,21 +1,26 @@
-# Web Framework
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+# Dependency installation
 
-# HTTP Client
-httpx>=0.25.0
-aiohttp>=3.9.0
+Use Python 3.11 to match the Docker image. Run installation commands inside a
+virtual environment from the repository root.
 
-# Data Validation
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
+## Runtime
 
-# Caching
-diskcache>=5.6.0
+[requirements.txt](requirements.txt) is the pinned runtime dependency list used
+by the Docker build:
 
-# XML Processing (for Torznab responses)
-lxml>=4.9.0
+```bash
+python -m pip install -r requirements.txt
+```
 
-# Utilities
-python-dotenv>=1.0.0
-tenacity>=8.2.0  # Retry logic for API calls
+## Development and tests
+
+[requirements-dev.txt](requirements-dev.txt) includes runtime dependencies,
+pytest, and pytest-asyncio:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Keep dependency versions in these requirements files. See the
+[development guide](README.md#development) for environment setup and server commands.
